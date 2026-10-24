@@ -18,8 +18,8 @@ class FakeDatabase:
 
 class FakeSnapshotService:
     # 測試策略時不真的寫入圖片檔案。
-    def save_snapshot(self, frame, result):
-        return f"snapshot-{result.event_type}.jpg"
+    def save_snapshot(self, frame, result, camera_id=None):
+        return f"snapshot-{camera_id or 'default'}-{result.event_type}.jpg"
 
 
 class FakeAlertService:
@@ -95,6 +95,13 @@ def test_alert_after_count_waits_until_threshold():
 
 def test_daily_alert_limit_still_records_later_events():
     manager, alert_service = make_manager()
+    manager.alert_policies["room_too_dark"] = AlertPolicy(
+        duration_sec=0,
+        cooldown_sec=0,
+        level="warning",
+        notify_line=True,
+        max_alerts_per_day=1,
+    )
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     assert manager.handle_result(frame, abnormal_result("room_too_dark")) is None

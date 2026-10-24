@@ -12,6 +12,7 @@
 - 模組化 Detector 偵測器架構
 - 畫面太暗偵測
 - 長時間低動作提醒
+- YOLO Pose 趴睡風險偵測
 - 異常事件管理
 - 冷卻時間，避免 LINE 洗版
 - SQLite 事件紀錄
@@ -26,7 +27,7 @@
 baby-camera-backend/
 ├── backend/
 │   ├── main.py                    # FastAPI 主入口，只負責啟動 API / 背景任務
-│   ├── config.py                  # 系統設定，讀取 .env
+│   ├── config.py                  # 系統設定，讀取 config.ini
 │   ├── camera_stream.py           # 攝影機串流來源管理
 │   ├── frame_reader.py            # 抽幀模組，固定時間取 frame 給偵測器
 │   ├── event_manager.py           # 異常事件判斷、去抖動、冷卻時間
@@ -41,6 +42,7 @@ baby-camera-backend/
 │   │   ├── motion_detector.py     # 長時間低動作
 │   │   ├── baby_detector.py       # 寶寶位置偵測，第一版預留
 │   │   ├── face_cover.py          # 臉部遮蔽偵測，第一版預留
+│   │   ├── prone_sleep_detector.py # YOLO Pose 趴睡風險偵測
 │   │   └── detector_manager.py    # 統一管理所有 detector
 │   │
 │   ├── services/
@@ -68,7 +70,7 @@ baby-camera-backend/
 │   └── app.log                    # 系統 log，執行後自動產生
 │
 ├── tests/
-├── .env.example                   # 設定範例
+├── config.ini.example             # 設定範例
 ├── requirements.txt
 ├── run.py                         # 本機啟動入口
 └── README.md
@@ -174,9 +176,111 @@ http://localhost:8000/health
 http://localhost:8000/stream
 ```
 
+多相機時可指定相機：
+
+```text
+http://localhost:8000/stream?camera_id=baby-cam-02
+http://localhost:8000/stream/baby-cam-02
+```
+
 攝影機即時畫面頁面：
 ```text
 http://localhost:8000/camera
+```
+
+Detector 調參窗口：
+```text
+http://localhost:8000/detector-lab
+```
+
+## 設定檔：config.ini
+
+目前後端統一讀取專案根目錄的 `config.ini`，不再讀取 `.env`。
+
+常用設定位置：
+
+```ini
+[camera]
+id = baby-cam-01
+source_type = opencv
+source = 0
+
+; Tapo RTSP 單相機範例：
+; source_type = tapo_rtsp
+; rtsp_host = 192.168.1.50
+; rtsp_port = 554
+; rtsp_username = your_tapo_camera_user
+; rtsp_password = your_tapo_camera_password
+; rtsp_stream = stream1
+
+; 多相機時啟用：
+; [cameras]
+; ids = baby-cam-01,baby-cam-02
+;
+; [camera.baby-cam-01]
+; source_type = opencv
+; source = 0
+;
+; [camera.baby-cam-02]
+; source_type = tapo_rtsp
+; rtsp_host = 192.168.1.50
+; rtsp_port = 554
+; rtsp_username = your_tapo_camera_user
+; rtsp_password = your_tapo_camera_password
+; rtsp_stream = stream1
+;
+; 每台相機可覆寫 detector 門檻：
+; [camera.baby-cam-02.detectors.dark]
+; brightness_threshold = 45
+;
+; [camera.baby-cam-02.detectors.motion]
+; low_ratio_threshold = 0.005
+
+[detectors.baby]
+enabled = true
+yolo_model_path = backend/detector/model/yolo11n-pose.pt
+confidence_threshold = 0.4
+face_labels = baby_face,face
+
+[alert]
+webhook_url = https://your-cloud-function-url
+ingest_key = your-alert-key
+timeout_sec = 10
+dry_run = false
+include_snapshot_image = true
+snapshot_max_bytes = 900000
+```
+
+修改 `config.ini` 後要重啟後端才會生效。
+
+寶寶臉部偵測目前採用 YOLO 判斷：
+
+- YOLO 偵測到 `baby_face` 或 `face` 時，視為寶寶在畫面中
+- 沒有偵測到寶寶臉部時，產生 `baby_position_warning`
+- 如果使用一般 pose 模型只輸出 `person`，請把 `BABY_FACE_LABELS` 改成 `person`，或改用有訓練 baby face / face class 的模型
+
+```ini
+[detectors.baby]
+enabled = true
+yolo_model_path = backend/detector/model/yolo11n-pose.pt
+confidence_threshold = 0.4
+face_labels = baby_face,face
+```
+
+臉部遮蔽偵測目前採用 YOLO 口鼻可見性判斷：
+
+- YOLO 有偵測到 `face`，但沒有偵測到 `nose` 或 `mouth` 時，判斷為可能遮蔽
+- 未設定 `[detectors.face_cover] yolo_model_path` 時，偵測器會安全停用，不會影響後端啟動
+- 未來訓練 YOLO 時，建議 class 至少包含 `face`、`nose`、`mouth`
+
+```ini
+[detectors.face_cover]
+enabled = true
+yolo_model_path = models/face_cover_yolo.pt
+face_confidence_threshold = 0.4
+part_confidence_threshold = 0.25
+require_nose = true
+require_mouth = true
 ```
 
 查詢事件：
@@ -291,13 +395,26 @@ LINE Messaging API 推播
 {
   "status": "ok",
   "camera_id": "baby-cam-01",
+  "default_camera_id": "baby-cam-01",
   "camera": {
     "source": "0",
     "opened": true,
     "last_read_ok": true,
     "has_latest_frame": true
   },
-  "detectors": ["dark_detector", "motion_detector"]
+  "detectors": ["dark_detector", "motion_detector"],
+  "cameras": [
+    {
+      "camera_id": "baby-cam-01",
+      "source": "0",
+      "camera": {
+        "opened": true,
+        "frames_read": 12
+      },
+      "detectors": ["dark_detector", "motion_detector"],
+      "detector_workers": []
+    }
+  ]
 }
 ```
 
@@ -313,6 +430,13 @@ MJPEG 即時影像串流。
 http://localhost:8000/stream
 ```
 
+多相機指定：
+
+```text
+http://localhost:8000/stream?camera_id=baby-cam-02
+http://localhost:8000/stream/baby-cam-02
+```
+
 ---
 
 ### GET `/events`
@@ -323,6 +447,7 @@ http://localhost:8000/stream
 
 ```text
 /events?limit=50
+/events?camera_id=baby-cam-01&limit=50
 ```
 
 ---
@@ -330,6 +455,12 @@ http://localhost:8000/stream
 ### POST `/test-alert`
 
 手動送出測試告警。
+
+多相機指定測試：
+
+```text
+/test-alert?camera_id=baby-cam-02
+```
 
 用途：
 
@@ -424,7 +555,6 @@ detectors.append(SafeZoneDetector())
 後續再慢慢加上：
 
 - YOLO 寶寶偵測
-- 趴睡偵測
 - 臉部遮蔽偵測
 - 安全區域偵測
 - WebRTC 串流
@@ -469,3 +599,165 @@ Default policies:
 - `baby_position_warning`: critical, LINE after 2 occurrences
 - `face_cover_warning`: critical, LINE immediately
 - `test_alert`: critical, manual test alert
+
+## Current Progress / 目前完成狀態
+
+目前已完成智慧寶寶攝影機後端 MVP 的主要骨架，包含攝影機讀取、即時串流、Detector 架構、事件成立判斷、LINE 告警流程，以及 Detector Lab 調參工具。
+
+### 1. 攝影機與串流
+
+- `camera_stream.py` 已可用 OpenCV 讀取 USB camera、RTSP、MJPEG 或影片來源
+- 支援多相機，每台相機都有獨立 CameraStream、FrameReader、DetectorManager worker 與 EventManager 狀態
+- `/stream` 提供預設相機 MJPEG 即時串流，`/stream?camera_id=<id>` 可指定相機
+- `/camera` 提供網頁版即時畫面與攝影機狀態，頁面可切換相機
+- `/health` 可查看所有相機是否開啟、是否讀到 frame、最後錯誤訊息與 detector worker 狀態
+- `/events?camera_id=<id>` 可依相機查詢事件
+- 告警截圖會依相機分資料夾保存，例如 `data/snapshots/baby-cam-01/...`
+- Firebase 告警 payload 可附上 `snapshotImage` base64，供 Cloud Function 轉成 LINE 圖片訊息
+
+### 2. 設定檔改為 config.ini
+
+目前所有設定統一改用 `config.ini`，不再讀取 `.env`。
+
+常用設定：
+
+```ini
+[detectors.baby]
+enabled = true
+yolo_model_path = backend/detector/model/yolo11n-pose.pt
+confidence_threshold = 0.4
+face_labels = baby_face,face
+
+[alert]
+webhook_url = https://ingestalert-qffjkcl3ea-de.a.run.app
+ingest_key = your-alert-key
+timeout_sec = 10
+dry_run = false
+```
+
+修改 `config.ini` 後需要重啟後端。
+
+### 3. 寶寶臉部辨識
+
+今天已先針對「寶寶臉部辨識」補齊第一版 YOLO 接入。
+
+目前 `baby_detector.py` 的邏輯：
+
+```text
+載入 YOLO 模型
+→ 對 frame 做推論
+→ 若偵測到 baby_face / face，代表寶寶臉部存在
+→ 若沒有偵測到，產生 baby_position_warning
+```
+
+目前模型路徑設定在：
+
+```ini
+[detectors.baby]
+yolo_model_path = backend/detector/model/yolo11n-pose.pt
+face_labels = baby_face,face
+```
+
+注意：目前使用的 `yolo11n-pose.pt` 通常是 pose/person 模型，可能輸出 `person` 而不是 `face`。如果先用這顆模型測「畫面中是否有人」，可以把 `face_labels` 改成：
+
+```ini
+face_labels = person
+```
+
+若要真正做 baby face 偵測，後續建議使用或訓練 class 包含 `baby_face` / `face` 的 YOLO 模型。
+
+### 4. Detector Lab 調參窗口
+
+已新增：
+
+```text
+http://localhost:8000/detector-lab
+```
+
+目前支援：
+
+- 上傳圖片或影片
+- 選擇 detector
+- 調整暗度、動作、寶寶臉部、臉部遮蔽相關門檻
+- 影片抽 frame 後送後端偵測
+- 顯示每張 frame 的結果、信心值、細節
+- 將 YOLO 偵測框與結果直接畫在預覽畫面上
+- 可另存標註後的 `.webm` 影片
+
+### 5. 臉部遮蔽偵測
+
+`face_cover_detector.py` 已先補好架構，未來訓練好 YOLO 後可使用：
+
+```text
+有 face，但沒有 nose 或 mouth
+→ 判斷可能遮蔽臉部
+```
+
+目前可透過 `config.ini` 設定模型路徑與信心門檻。
+
+### 6. LINE 告警
+
+目前 Python 後端會呼叫 Firebase Cloud Function，再由 Firebase 寫入 Firestore 並發 LINE。
+
+事件告警策略集中在 `event_manager.py` 的 `alert_policies`：
+
+- 可設定只記錄不發 LINE
+- 可設定達指定次數才發 LINE
+- 可設定一天最多發幾次
+- `/test-alert` 可測試 Firebase / LINE 流程
+
+### 7. 趴睡風險偵測
+
+已加入 `prone_sleep_detector.py`，使用 COCO Pose 的鼻、眼、耳、肩與髖關鍵點可見度判斷風險。只有身體姿勢足以判讀、但大部分臉部關鍵點不可見時才會回報；狀態需持續 10 秒才建立事件並通知。
+
+這是單鏡頭姿勢風險提示，不是醫療判斷，也無法只靠單張 RGB 畫面證明寶寶一定趴睡。建議使用固定俯視角度並以實際環境資料調整門檻。
+
+```ini
+[detectors.prone_sleep]
+enabled = false
+yolo_model_path = backend/detector/model/yolo11n-pose.pt
+keypoint_confidence_threshold = 0.35
+min_body_keypoints = 3
+max_visible_face_keypoints = 1
+```
+
+### 8. 目前測試狀態
+
+目前後端測試已通過：
+
+```text
+pytest -> 25 passed
+```
+
+已涵蓋：
+
+- dark detector
+- motion detector
+- baby detector
+- face cover detector
+- prone sleep detector
+- event alert policy
+
+### 俯拍安全檢測（新增）
+
+新增 `SafetyPipeline`，共用定位結果判斷畫面品質、睡眠區異物、頭部遮擋、邊界與睡姿。
+支援 Detector Lab 測試與正常／異常／無法判讀狀態；新事件預設只記錄。
+每台相機會獨立判斷人物候選，空床或未知狀態時暫停人物相關告警；即時頁可自動切換候選床位。
+正式使用前須逐台設定床墊範圍，異物及睡姿分類另需對應模型。
+詳見 [俯拍管線設定與限制](docs/top-down-safety.md)。
+
+
+## Windows 雙擊啟動
+
+完成本機環境與 `config.ini` 設定後，雙擊 `start_windows.bat`：
+
+1. 使用專案內的 `.venv`，後端已運行時直接沿用。
+2. 未運行時，在背景啟動本機監看服務，等待就緒後開啟預設瀏覽器的 `/camera`。
+3. 在頁面按「啟用聲音警報」，保持頁面開啟且電腦未靜音。重新整理或重開頁面後需再次啟用。
+
+啟動失敗時視窗會保留錯誤訊息；後端啟動輸出位於 `logs/launcher.log`。
+關閉網頁不會停止背景後端。此啟動方式維持本機監看模式，不會自動發送 LINE。
+
+新電腦需先建立 `.venv`、安裝 `requirements.txt`，並複製 `config.ini.example` 為 `config.ini` 後填入本機設定。
+哭聲辨識還需 `requirements-audio.txt`、FFmpeg 與本機音訊模型，詳見 `docs/audio-monitor.md`。
+GitHub 不包含帳密、本機模型、截圖、錄影或事件資料庫；請另外在本機配置。

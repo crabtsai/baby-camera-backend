@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,6 +26,7 @@ class EventState:
     alert_count_today: int = 0
     alert_day: str = ""
     occurrence_count: int = 0
+    last_observation_at: float | None = None
 
 
 class EventManager:
@@ -37,13 +39,27 @@ class EventManager:
         database: Database,
         snapshot_service: SnapshotService,
         alert_service: AlertService,
+        camera_id: str | None = None,
     ):
         self.settings = settings
+        self.camera_id = camera_id or settings.camera_id
         self.database = database
         self.snapshot_service = snapshot_service
         self.alert_service = alert_service
         self.states: dict[str, EventState] = {}
         self.alert_policies = self._build_alert_policies(settings)
+        for event_type in ("image_quality_warning", "sleep_area_object", "head_obstruction_warning",
+                           "boundary_warning", "sleep_posture_warning"):
+            duration = 10 if event_type in {"image_quality_warning", "sleep_posture_warning"} else 5
+            self.alert_policies[event_type] = AlertPolicy(
+                duration_sec=settings.camera_detector_float(self.camera_id, "safety", "duration_sec", duration),
+                cooldown_sec=settings.camera_detector_float(self.camera_id, "safety", "cooldown_sec", 180),
+                notify_line=settings.camera_detector_bool(self.camera_id, "safety", "notify_line", settings.safety_notify_line),
+                max_alerts_per_day=10,
+            )
+        # WebCam 即時模式下 detector 會平行完成，EventManager 用 lock 統一序列化事件狀態。
+        # 這樣可以避免同一事件類型同時更新 abnormal_since、occurrence_count 或告警次數。
+        self.lock = threading.RLock()
 
     @staticmethod
     def _build_alert_policies(settings: Settings) -> dict[str, AlertPolicy]:
@@ -79,6 +95,13 @@ class EventManager:
                 level="critical",
                 notify_line=True,
             ),
+            "prone_sleep_warning": AlertPolicy(
+                # 單張姿勢可能是翻身過程；持續 10 秒才成立並通知。
+                duration_sec=10,
+                cooldown_sec=180,
+                level="critical",
+                notify_line=True,
+            ),
             "test_alert": AlertPolicy(duration_sec=0, cooldown_sec=0, level="critical"),
         }
 
@@ -91,10 +114,24 @@ class EventManager:
         return events
 
     def handle_result(self, frame: np.ndarray, result: DetectionResult) -> EventRecord | None:
+        with self.lock:
+            return self._handle_result(frame, result)
+
+    def _handle_result(self, frame: np.ndarray, result: DetectionResult) -> EventRecord | None:
         event_type = result.event_type
         policy = self.alert_policies.get(event_type, AlertPolicy(duration_sec=5, cooldown_sec=300))
         state = self.states.setdefault(event_type, EventState())
         now = time.monotonic()
+
+        # Unknown results and observation gaps break continuity. Time without evidence
+        # must not count toward a sustained-risk event after an outage.
+        max_gap = result.extra.get("max_observation_gap_sec")
+        if max_gap is not None and state.last_observation_at is not None and now - state.last_observation_at > max_gap:
+            state.abnormal_since = None
+        state.last_observation_at = now
+        if result.extra.get("evaluable") is False:
+            state.abnormal_since = None
+            return None
 
         # 偵測結果恢復正常時，異常計時歸零。
         if not result.is_abnormal:
@@ -118,12 +155,16 @@ class EventManager:
         # 只計算「已成立的事件」，不是每一張異常 frame 都加一。
         state.occurrence_count += 1
 
-        snapshot_path = self.snapshot_service.save_snapshot(frame, result)
+        snapshot_path = self.snapshot_service.save_snapshot(
+            frame,
+            result,
+            camera_id=self.camera_id,
+        )
         should_alert = self._should_alert(state, policy)
 
         # 已成立事件一定寫入資料庫；LINE 是否發送由策略決定。
         event = EventRecord(
-            camera_id=self.settings.camera_id,
+            camera_id=self.camera_id,
             event_type=result.event_type,
             detector_name=result.detector_name,
             message=result.message,
@@ -172,16 +213,17 @@ class EventManager:
         return True
 
     def create_test_event(self) -> EventRecord:
-        policy = self.alert_policies["test_alert"]
-        event = EventRecord(
-            camera_id=self.settings.camera_id,
-            event_type="test_alert",
-            detector_name="manual_test",
-            message="這是一則寶寶攝影機測試告警",
-            confidence=1.0,
-            snapshot_path=None,
-            extra={"source": "POST /test-alert"},
-        )
-        event = self.database.insert_event(event)
-        self.alert_service.send_alert(event, policy)
-        return event
+        with self.lock:
+            policy = self.alert_policies["test_alert"]
+            event = EventRecord(
+                camera_id=self.camera_id,
+                event_type="test_alert",
+                detector_name="manual_test",
+                message="這是一則寶寶攝影機測試告警",
+                confidence=1.0,
+                snapshot_path=None,
+                extra={"source": "POST /test-alert"},
+            )
+            event = self.database.insert_event(event)
+            self.alert_service.send_alert(event, policy)
+            return event

@@ -1,0 +1,123 @@
+[app]
+name = Baby Camera Backend
+host = 0.0.0.0
+port = 8000
+
+[camera]
+; 舊版單相機設定。沒有啟用 [cameras] 時會使用這組。
+id = baby-cam-01
+; source_type = opencv 時，source 可填 USB camera index、RTSP URL、MJPEG URL 或影片檔路徑。
+source_type = opencv
+source = 0
+;
+; Tapo RTSP 範例：
+; 1. 先在 Tapo App 啟用攝影機帳號 / RTSP 或 ONVIF/RTSP 相關設定。
+; 2. 將 source_type 改成 tapo_rtsp，並填入攝影機 IP、RTSP 帳號與密碼。
+; source_type = tapo_rtsp
+; rtsp_host = 192.168.1.50
+; rtsp_port = 554
+; rtsp_username = your_tapo_camera_user
+; rtsp_password = your_tapo_camera_password
+; rtsp_stream = stream1
+
+; 多相機設定。要啟用多相機時取消註解，並替每台相機建立 [camera.<id>]。
+; [cameras]
+; ids = baby-cam-01,baby-cam-02
+;
+; [camera.baby-cam-01]
+; source_type = opencv
+; source = 0
+;
+; [camera.baby-cam-02]
+; source_type = tapo_rtsp
+; rtsp_host = 192.168.1.50
+; rtsp_port = 554
+; rtsp_username = your_tapo_camera_user
+; rtsp_password = your_tapo_camera_password
+; rtsp_stream = stream1
+;
+; 每台相機也可以覆寫 detector 參數，例如不同房間亮度不同時：
+; [camera.baby-cam-02.detectors.dark]
+; brightness_threshold = 45
+;
+; [camera.baby-cam-02.detectors.motion]
+; low_ratio_threshold = 0.005
+
+[stream]
+; AI 偵測抽幀間隔，單位是秒。所有相機共用這個頻率。
+frame_interval_sec = 1.0
+jpeg_quality = 80
+
+[paths]
+database_path = data/baby_camera.db
+snapshot_dir = data/snapshots
+log_dir = logs
+
+[detectors.dark]
+enabled = true
+brightness_threshold = 30
+duration_sec = 10
+cooldown_sec = 300
+
+[detectors.motion]
+enabled = true
+diff_threshold = 8
+low_ratio_threshold = 0.003
+duration_sec = 60
+cooldown_sec = 600
+
+[detectors.baby]
+enabled = false
+yolo_model_path =
+confidence_threshold = 0.4
+face_labels = baby_face,face
+
+[detectors.face_cover]
+enabled = false
+yolo_model_path =
+face_confidence_threshold = 0.4
+part_confidence_threshold = 0.25
+require_nose = true
+require_mouth = true
+
+[detectors.prone_sleep]
+; 使用 COCO keypoints 的 YOLO Pose 模型。單張畫面只能判斷風險，需搭配事件持續時間降低誤報。
+enabled = false
+yolo_model_path = backend/detector/model/yolo11n-pose.pt
+keypoint_confidence_threshold = 0.35
+min_body_keypoints = 3
+max_visible_face_keypoints = 1
+
+[detectors.safety]
+; New top-down rules share localization. Start in record-only mode.
+enabled = false
+notify_line = false
+pose_model_path = backend/detector/model/yolo11n-pose.pt
+; Local YOLO detect weights with ALL hazardous_labels below.
+object_model_path =
+; Local YOLO classify weights trained on person crops: supine,side,prone.
+posture_model_path =
+hazardous_labels = pillow,blanket,toy,teddy bear
+confidence = 0.5
+blur_threshold = 25
+dark_threshold = 20
+overexposed_ratio = 0.8
+boundary_margin = 0.08
+object_overlap = 0.1
+head_overlap = 0.15
+; Confirm a single person over 3 observations; report no detection after 5.
+present_frames = 3
+absent_frames = 5
+; Normalized x1,y1,x2,y2. Leave empty until calibrated; never assume full frame is mattress.
+sleep_region =
+; Set independently for each camera, and recalibrate after moving the camera.
+; [camera.baby-cam-01.detectors.safety]
+; sleep_region = 0.1,0.1,0.9,0.9
+
+[alert]
+webhook_url =
+ingest_key =
+timeout_sec = 10
+dry_run = false
+include_snapshot_image = true
+snapshot_max_bytes = 900000

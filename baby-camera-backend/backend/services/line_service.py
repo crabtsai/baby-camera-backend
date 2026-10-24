@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -50,10 +51,53 @@ class LineService:
             logger.exception("Failed to send Firebase alert")
             return False
 
-    @staticmethod
-    def _build_payload(event: EventRecord, level: str, notify_line: bool) -> dict[str, Any]:
-        # 上層欄位保持簡潔穩定；後端細節統一放在 extra。
+    def _build_snapshot_image(self, event: EventRecord) -> dict[str, Any] | None:
+        # 將事件截圖一起送給 Firebase。LINE 圖片訊息通常需要公開 URL，
+        # 所以 Firebase Cloud Function 可收到 base64 後再上傳 Storage 或轉成可用圖片 URL。
+        if not self.settings.alert_include_snapshot_image or not event.snapshot_path:
+            return None
+
+        path = Path(event.snapshot_path)
+        if not path.exists() or not path.is_file():
+            return {
+                "included": False,
+                "reason": "snapshot_file_not_found",
+                "path": event.snapshot_path,
+            }
+
+        size = path.stat().st_size
+        if size > self.settings.alert_snapshot_max_bytes:
+            return {
+                "included": False,
+                "reason": "snapshot_file_too_large",
+                "path": event.snapshot_path,
+                "bytes": size,
+                "maxBytes": self.settings.alert_snapshot_max_bytes,
+            }
+
+        try:
+            import base64
+
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        except Exception:
+            logger.exception("Failed to encode snapshot image: %s", path)
+            return {
+                "included": False,
+                "reason": "snapshot_encode_failed",
+                "path": event.snapshot_path,
+            }
+
         return {
+            "included": True,
+            "mimeType": "image/jpeg",
+            "filename": path.name,
+            "bytes": size,
+            "base64": encoded,
+        }
+
+    def _build_payload(self, event: EventRecord, level: str, notify_line: bool) -> dict[str, Any]:
+        # 上層欄位保持簡潔穩定；後端細節統一放在 extra。
+        payload = {
             "version": 1,
             "cameraId": event.camera_id,
             "eventType": event.event_type,
@@ -69,3 +113,7 @@ class LineService:
                 "eventId": event.id,
             },
         }
+        snapshot_image = self._build_snapshot_image(event)
+        if snapshot_image is not None:
+            payload["snapshotImage"] = snapshot_image
+        return payload

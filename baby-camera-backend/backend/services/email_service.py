@@ -9,4 +9,5 @@ class EmailService:
     # 預留 Email 通知。
 
     def send_email(self, subject: str, body: str) -> None:
+        # 目前告警主線走 LINE/Firebase；Email 先保留介面，未來可接 SMTP。
         logger.info("EmailService is not implemented yet. subject=%s", subject)
