@@ -47,6 +47,8 @@ class EventManager:
         self.snapshot_service = snapshot_service
         self.alert_service = alert_service
         self.states: dict[str, EventState] = {}
+        self._local_airway_alert: dict | None = None
+        self._local_airway_alert_at: float | None = None
         self.alert_policies = self._build_alert_policies(settings)
         for event_type in ("image_quality_warning", "sleep_area_object", "head_obstruction_warning",
                            "boundary_warning", "sleep_posture_warning"):
@@ -60,6 +62,16 @@ class EventManager:
         # WebCam 即時模式下 detector 會平行完成，EventManager 用 lock 統一序列化事件狀態。
         # 這樣可以避免同一事件類型同時更新 abnormal_since、occurrence_count 或告警次數。
         self.lock = threading.RLock()
+
+    def local_airway_alert(self) -> dict | None:
+        """Recent confirmed event for local browsers, independent of LINE policy."""
+        with self.lock:
+            if self._local_airway_alert is None or self._local_airway_alert_at is None:
+                return None
+            age = time.monotonic() - self._local_airway_alert_at
+            if not 0 <= age < 60:
+                return None
+            return dict(self._local_airway_alert)
 
     @staticmethod
     def _build_alert_policies(settings: Settings) -> dict[str, AlertPolicy]:
@@ -184,6 +196,12 @@ class EventManager:
 
         event = self.database.insert_event(event)
         state.last_event_at = now
+        if event.event_type == "face_cover_warning":
+            self._local_airway_alert = {
+                "id": event.id, "camera_id": self.camera_id,
+                "message": event.message, "created_at": event.created_at,
+            }
+            self._local_airway_alert_at = time.monotonic()
         if should_alert:
             # 只有通過策略檢查後才會真正發 LINE。
             self.alert_service.send_alert(event, policy)

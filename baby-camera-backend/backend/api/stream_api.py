@@ -268,6 +268,8 @@ def camera_page():
         <span id="audio-status" class="value">等待音訊狀態</span>
       </div>
       <div id="audio-alert" role="alert" style="color:#b42318;font-weight:bold"></div>
+      <p>聲音由開啟此頁的電腦／手機播放；請先啟用聲音、保持頁面開啟及音量開啟。攝影機喇叭尚未連接。</p>
+      <div id="airway-alert" role="alert" style="color:#b42318;font-weight:bold"></div>
       <div class="status-row">
         <span class="label">口鼻／奶嘴判讀</span>
         <span id="airway-status" class="value">等待狀態；未確認不等於安全</span>
@@ -323,6 +325,21 @@ def camera_page():
     let selectedCameraId = "";
     let alarmContext = null;
     let lastAudioAlertId = null;
+    const lastAirwayAlertIds = new Map();
+    function updateAirwayAlerts(cameras) {
+      const alerts = cameras.map(camera => camera.airway_alert).filter(Boolean);
+      document.getElementById("airway-alert").textContent = alerts.map(alert =>
+        `${alert.camera_id}：${alert.message}（${alert.created_at}）`).join("；");
+      if (!alarmContext || alarmContext.state !== "running") return;
+      let shouldBeep = false;
+      for (const alert of alerts) {
+        if (lastAirwayAlertIds.get(alert.camera_id) !== alert.id) {
+          lastAirwayAlertIds.set(alert.camera_id, alert.id);
+          shouldBeep = true;
+        }
+      }
+      if (shouldBeep) beep();
+    }
     function beep() {
       if (!alarmContext || alarmContext.state !== "running") return;
       for (let i = 0; i < 3; i++) {
@@ -371,6 +388,7 @@ def camera_page():
         const response = await fetch("/health", { cache: "no-store" });
         const data = await response.json();
         const cameras = data.cameras || [];
+        updateAirwayAlerts(cameras);
         const suggestion = data.occupancy_summary?.suggested_camera_id;
         if (autoFollow.checked && suggestion && suggestion !== selectedCameraId) {
           selectedCameraId = suggestion;
@@ -413,6 +431,7 @@ def camera_page():
       } catch (error) {
         document.getElementById("audio-status").textContent = "連線失敗，哭聲警報無法更新";
         document.getElementById("airway-status").textContent = "狀態已失效，無法判讀口鼻";
+        document.getElementById("airway-alert").textContent = "警報連線中斷，無法接收新的口鼻遮擋提醒";
         occupancyText.textContent = "狀態已失效，無法確認";
         allOccupancyText.textContent = "狀態已失效，無法確認";
         opened.textContent = "狀態讀取失敗";

@@ -61,6 +61,7 @@ class CameraRuntime:
             "occupancy": occupancy,
             "detectors": self.detector_manager.names(),
             "detector_workers": self.detector_manager.worker_status(),
+            "airway_alert": self.event_manager.local_airway_alert(),
         }
 
 
