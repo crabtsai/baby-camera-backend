@@ -21,4 +21,6 @@ data/snapshots/**
 *.onnx
 *.safetensors
 models/**
+data/airway/**
+runs/airway/**
 firebase-debug.log*

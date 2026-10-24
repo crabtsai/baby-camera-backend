@@ -47,6 +47,57 @@ nose / mouth 必須標註可見部分，不能依人臉幾何猜出被遮住的�
 
 `/camera` 已顯示口鼻判讀狀態，包括未啟用、unknown 與資料過期。服務 health=ok 只代表服務健康，不代表口鼻遮擋功能可用。
 
+## 本機模型工作流程
+
+使用專案 `.venv`，下列指令不會更改線上設定或自動啟用模型：
+
+```powershell
+.venv/Scripts/python.exe -m scripts.airway_model init
+.venv/Scripts/python.exe -m scripts.airway_model inspect --model models/yolov11n_face_detection.pt
+.venv/Scripts/python.exe -m scripts.airway_model validate
+```
+
+`inspect` 顯示 task、實際類別、SHA-256 及缺少的類別；現有人臉模型只有 `face`，因此檢查不通過屬於預期結果。僅載入可信任的本機 `.pt`。
+
+`init` 建立 `data/airway/images/{train,val,test}`、對應 `labels`、`dataset.yaml` 與 `samples.csv`，不覆寫既有檔案。每張影像須有同名 YOLO 標註文字檔；人工確認的負樣本使用空檔，不將遺漏標註當作負樣本。類別 ID 依上方八類順序，從 0 開始。每列為 `class_id x_center y_center width height`，座標正規化到 0–1。
+
+`samples.csv` 範例（影像與標註須自行準備，範例不是訓練資料）：
+
+```csv
+image,session,assessment
+images/train/day01_001.jpg,camera1-day01,clear
+images/val/night02_001.jpg,camera1-night02,abnormal
+images/test/day03_001.jpg,camera2-day03,unknown
+```
+
+assessment 是人工覆核的單張判讀：clear / abnormal / unknown。相同拍攝場次與其衍生影像必須留在同一 split。檢查器拒絕跨 split 場次、重複解碼影像、缺標註、越界／非有限框及缺少類別／判讀狀態；格式通過不代表樣本數足夠或人工標註正確。相似影格仍須人工去重。
+
+資料完成後，以可信任的本機 detection 模型為起點：
+
+```powershell
+.venv/Scripts/python.exe -m scripts.airway_model train --model models/yolov11n_face_detection.pt --epochs 100 --device cpu
+.venv/Scripts/python.exe -m scripts.airway_model evaluate --model runs/airway/train/weights/best.pt
+```
+
+訓練輸出目錄可能自動加序號，以指令實際回傳的 weights 路徑為準。測試使用獨立 test 場次及實際 `FaceCoverDetector` 規則，產生逐張預測、三態混淆矩陣、漏報率（unknown 也計入遮擋漏報）、誤報率與 unknown 比例。這不是端到端告警驗證，仍需測試人物閘門、日夜模式與連續事件延遲。報告不會自動標記可上線。
+
+資料、公開下載、報告及訓練產物均留在忽略追蹤的 `data/airway`、`runs/airway`，不推送照片或權重。資料格式依 [Ultralytics 官方文件](https://docs.ultralytics.com/datasets/detect/)。
+
+## 公開資料來源檢查（2026-10-24）
+
+- [CribNet / CribHD](https://github.com/ostadabbas/CribNet)：官方提供[資料 ZIP](https://coe.northeastern.edu/Research/AClab/CribHD/CribHD.zip)，含被子、玩具與假娃娃模擬場景。研究的被子遮擋判定結合分割與姿勢點，並非本專案八類模型；不可直接將 blanket 標籤改名為 blanket_on_nose。README 將程式限於非商業用途；資料再利用應另檢查隨附授權。
+- [Roboflow Baby](https://universe.roboflow.com/oscar6207-gmail-com/baby-trill)：頁面列 CC BY 4.0，包含 face_all_covered / face_mouth_covered / face_pacifier 等標籤，但無已訓練模型，下載要求登入。第 1 版含增強影像且沒有 test split，需要檢查標註語意並按來源重新分組。不能把整臉狀態框直接當成精確口鼻部位框。
+
+下載 CribHD 後可檢查 CRC、計算 SHA-256、僅解壓資料檔並列出類別：
+
+```powershell
+.venv/Scripts/python.exe -m scripts.inspect_cribhd data/airway/downloads/CribHD.zip
+```
+
+此步只準備研究資料，不會下載或假造一個可用的口鼻警報模型。
+
+本次實際下載檢查結果：ZIP 為 640,664,878 bytes，CRC 通過，SHA-256 為 `c771c76755ebc39f090ad50d83a10c1e5cc0e8b979c21c75fcafc57f319e4f9f`。解壓位置 `data/airway/public/cribhd`，詳細清單為該目錄的 `archive-report.json`。檔案內沒有模型權重；被子 YOLO 資料實際為 train 449、valid 40、test 10 張，只有 `blanket` 一類；模擬場景另有 120 張。全包 4,617 個 JPG 包含多種標註格式的重複影像，不可當成 4,617 個獨立樣本。尚缺口鼻、奶嘴與精確遮擋標註，不能直接用此包訓練完整八類模型。
+
 ## 現場啟用測試
 
 依使用者要求，已將本機 `[detectors.face_cover] enabled=true` 並重啟排程。模型路徑仍未設定，因此模組會回報 unknown／模型不可用，不會產生遮擋警報。`/health` 預期為 degraded，表示這個必要模型缺失；其他相機擷取、臉部與動作偵測繼續執行。這是接線測試，不是遮擋辨識能力測試。

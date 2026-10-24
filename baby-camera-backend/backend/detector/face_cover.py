@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from backend.detector.base_detector import BaseDetector
+from backend.detector.airway_model import check_model_contract
 from backend.schemas import DetectionResult
 
 logger = logging.getLogger(__name__)
@@ -54,15 +55,13 @@ class FaceCoverDetector(BaseDetector):
         try:
             from ultralytics import YOLO
         except Exception:
+            self.disabled_reason = "無法匯入 ultralytics，請檢查模型執行環境"
             logger.exception("ultralytics 尚未安裝，無法載入臉部遮蔽 YOLO 模型")
             return None
 
         try:
             model = YOLO(self.model_path)
-            required = {"face", "nose", "mouth", "pacifier_in_mouth", "blanket",
-                        "blanket_on_nose", "blanket_on_mouth", "covered_face"}
-            if model.task != "detect" or not required.issubset(set(model.names.values())):
-                raise ValueError("模型必須為 detect 且包含：" + ", ".join(sorted(required)))
+            check_model_contract(model)
         except Exception as exc:
             self.disabled_reason = str(exc)
             logger.exception("臉部遮蔽 YOLO 模型載入失敗：%s", self.model_path)
