@@ -15,6 +15,7 @@ from backend.detector.baby_detector import BabyDetector
 from backend.detector.base_detector import BaseDetector
 from backend.detector.dark_detector import DarkDetector
 from backend.detector.face_cover import FaceCoverDetector
+from backend.detector.baby_face_parts import BabyFacePartsDetector
 from backend.detector.motion_detector import MotionDetector
 from backend.detector.prone_sleep_detector import ProneSleepDetector
 from backend.schemas import DetectionResult
@@ -264,6 +265,9 @@ class DetectorManager:
                     ),
                 )
             )
+
+        if settings.camera_detector_bool(camera, "face_parts", "enabled", settings.enable_face_parts_detector):
+            detectors.append(BabyFacePartsDetector.from_settings(settings, camera))
 
         enable_face_cover = settings.camera_detector_bool(
             camera,

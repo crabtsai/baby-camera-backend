@@ -28,6 +28,7 @@ def config(request: Request):
             "motion": s.enable_motion_detector,
             "baby": s.enable_baby_detector,
             "face_cover": s.enable_face_cover_detector,
+            "face_parts": s.enable_face_parts_detector,
             "safety": s.enable_safety_detector,
         },
         "baby_detector": {
@@ -43,6 +44,12 @@ def config(request: Request):
             "part_confidence_threshold": s.face_cover_part_confidence_threshold,
             "require_nose": s.face_cover_require_nose,
             "require_mouth": s.face_cover_require_mouth,
+        },
+        "face_parts_detector": {
+            "enabled": s.enable_face_parts_detector,
+            "model_id": "baby-face-parts/2",
+            "api_key_configured": bool(s.face_parts_api_key),
+            "obstruction_detection_supported": False,
         },
         "database_path": str(s.database_path),
         "snapshot_dir": str(s.snapshot_dir),

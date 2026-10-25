@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import configparser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -183,6 +183,12 @@ class Settings:
     )
 
     enable_face_cover_detector: bool = _get_bool("detectors.face_cover", "enabled", False)
+    enable_face_parts_detector: bool = _get_bool("detectors.face_parts", "enabled", False)
+    face_parts_api_key: str = field(default=_get("detectors.face_parts", "api_key", ""), repr=False)
+    face_parts_api_url: str = _get("detectors.face_parts", "api_url", "http://127.0.0.1:9001")
+    face_parts_allow_cloud: bool = _get_bool("detectors.face_parts", "allow_cloud", False)
+    face_parts_confidence: float = _get_float("detectors.face_parts", "confidence", 0.4)
+    face_parts_timeout_sec: float = _get_float("detectors.face_parts", "timeout_sec", 10.)
     face_cover_yolo_model_path: str = _get("detectors.face_cover", "yolo_model_path", "")
     face_cover_face_confidence_threshold: float = _get_float(
         "detectors.face_cover",

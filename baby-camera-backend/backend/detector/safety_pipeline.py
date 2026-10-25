@@ -151,6 +151,7 @@ class SafetyPipeline(BaseDetector):
     name = "safety_pipeline"
     EVENTS = ("sleep_area_object", "head_obstruction_warning", "boundary_warning", "sleep_posture_warning")
     DEPENDENT_EVENTS = {"motion_detector": "low_motion_warning", "baby_detector": "baby_position_warning",
+                        "baby_face_parts_detector": "face_parts_visibility",
                         "face_cover_detector": "face_cover_warning", "prone_sleep_detector": "prone_sleep_warning"}
 
     def __init__(self, options: SafetyOptions | None = None, scene_fn: Callable | None = None):
@@ -252,6 +253,10 @@ class SafetyPipeline(BaseDetector):
                 try:
                     dependent_results = detector.detect_many(frame)
                     self.capabilities["dependent_detectors"][detector.name]["last_error"] = None
+                    self.capabilities["dependent_detectors"][detector.name]["available"] = (
+                        getattr(detector, "operational", True)
+                        and not (hasattr(detector, "predict_fn") and detector.predict_fn is None)
+                    )
                     for result in dependent_results:
                         result.extra.update(occupancy_state="present", max_observation_gap_sec=self.options.max_observation_gap_sec)
                         if result.extra.get("enabled") is False:

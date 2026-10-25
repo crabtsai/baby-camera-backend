@@ -271,6 +271,10 @@ def camera_page():
       <p>聲音由開啟此頁的電腦／手機播放；請先啟用聲音、保持頁面開啟及音量開啟。攝影機喇叭尚未連接。</p>
       <div id="airway-alert" role="alert" style="color:#b42318;font-weight:bold"></div>
       <div class="status-row">
+        <span class="label">寶寶口鼻位置</span>
+        <span id="face-parts-status" class="value">等待口鼻模型狀態</span>
+      </div>
+      <div class="status-row">
         <span class="label">口鼻／奶嘴判讀</span>
         <span id="airway-status" class="value">等待狀態；未確認不等於安全</span>
       </div>
@@ -413,6 +417,14 @@ def camera_page():
           lastAudioAlertId = alert.id;
           if (recent) beep();
         }
+        const faceParts = (current.detector_workers || []).flatMap(w => w.assessments || [])
+          .find(r => r.event_type === "face_parts_visibility");
+        const partsAge = faceParts ? Date.now() / 1000 - faceParts.observed_at : Infinity;
+        document.getElementById("face-parts-status").textContent = !faceParts
+          ? "口鼻位置模型未啟用"
+          : (!camera.frame_fresh || !Number.isFinite(partsAge) || partsAge < 0 || partsAge > 30)
+            ? "口鼻位置無法確認：影像、推論結果過期或監測對象未確認"
+            : faceParts.message;
         const airway = (current.detector_workers || []).flatMap(w => w.assessments || [])
           .find(r => r.event_type === "face_cover_warning");
         document.getElementById("airway-status").textContent = airway
@@ -431,6 +443,7 @@ def camera_page():
       } catch (error) {
         document.getElementById("audio-status").textContent = "連線失敗，哭聲警報無法更新";
         document.getElementById("airway-status").textContent = "狀態已失效，無法判讀口鼻";
+        document.getElementById("face-parts-status").textContent = "連線中斷，口鼻位置無法確認";
         document.getElementById("airway-alert").textContent = "警報連線中斷，無法接收新的口鼻遮擋提醒";
         occupancyText.textContent = "狀態已失效，無法確認";
         allOccupancyText.textContent = "狀態已失效，無法確認";

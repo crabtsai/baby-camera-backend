@@ -16,6 +16,7 @@ from backend.detector.baby_detector import BabyDetector
 from backend.detector.dark_detector import DarkDetector
 from backend.detector.detector_manager import DetectorManager
 from backend.detector.face_cover import FaceCoverDetector
+from backend.detector.baby_face_parts import BabyFacePartsDetector
 from backend.detector.motion_detector import MotionDetector
 from backend.detector.safety_pipeline import SafetyPipeline, parse_region
 from backend.schemas import DetectionResult
@@ -108,6 +109,7 @@ def _build_detectors(
         face_cover_model_path = getattr(settings, "face_cover_yolo_model_path", "") if settings is not None else ""
 
     available = {
+        "baby_face_parts_detector": BabyFacePartsDetector.from_settings(settings, camera_id),
         "dark_detector": DarkDetector(params.dark_brightness_threshold),
         "motion_detector": MotionDetector(
             diff_threshold=params.motion_diff_threshold,
@@ -351,6 +353,7 @@ def detector_lab_page():
           <option value="motion_detector">寶寶動作 / 低動作</option>
           <option value="baby_detector">寶寶臉部</option>
           <option value="face_cover_detector">臉部遮蔽</option>
+          <option value="baby_face_parts_detector">寶寶口鼻（Roboflow baby-face-parts/2）</option>
           <option value="safety_pipeline">俯拍：品質／異物／頭部遮擋／邊界／睡姿</option>
         </select>
       </div>
