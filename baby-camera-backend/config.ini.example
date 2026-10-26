@@ -95,6 +95,14 @@ min_body_keypoints = 3
 max_visible_face_keypoints = 1
 
 [detectors.safety]
+; Candidate segmentation models can be observed without driving alarms.
+objects_shadow = false
+; Enable collection per camera (replace YOUR_CAMERA_ID):
+; [camera.YOUR_CAMERA_ID.detectors.blanket_learning]
+; enabled = true
+; interval_sec = 60
+; max_images = 1000
+object_imgsz = 640
 ; Pose inference rotation only, counterclockwise. Coordinates map back to the original image.
 pose_rotation = 0
 ; Experimental reference appearance/lost tracking warning; not an obstruction classifier.

@@ -23,4 +23,5 @@ data/snapshots/**
 models/**
 data/airway/**
 runs/airway/**
+runs/**
 firebase-debug.log*

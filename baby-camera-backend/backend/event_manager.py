@@ -53,6 +53,11 @@ class EventManager:
         self.presence_snapshot: str | None = None
         self._presence_captured = False
         self._presence_capture_at = float("-inf")
+        from backend.services.blanket_collection import BlanketCollection
+        self.blanket_collection = BlanketCollection(self.camera_id,
+            enabled=settings.camera_detector_bool(self.camera_id,"blanket_learning","enabled",False),
+            interval=settings.camera_detector_float(self.camera_id,"blanket_learning","interval_sec",60),
+            limit=settings.camera_detector_float(self.camera_id,"blanket_learning","max_images",1000))
         self.alert_policies = self._build_alert_policies(settings)
         for event_type in ("image_quality_warning", "sleep_area_object", "head_obstruction_warning",
                            "boundary_warning", "sleep_posture_warning"):
@@ -137,6 +142,7 @@ class EventManager:
 
     def _handle_result(self, frame: np.ndarray, result: DetectionResult) -> EventRecord | None:
         event_type = result.event_type
+        self.blanket_collection.observe(frame,result)
         if event_type == "bed_occupancy":
             if result.extra.get("state") == "absent":
                 self._presence_captured = False

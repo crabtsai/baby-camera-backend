@@ -42,6 +42,19 @@ def area(box: Box) -> float:
     return max(0., box[2] - box[0]) * max(0., box[3] - box[1])
 
 
+def object_head_overlap(obj, head):
+    """Mask intersection avoids rectangular blanket boxes covering empty corners."""
+    if "polygon" not in obj:
+        return intersection(obj["box"], head)/max(area(head),1e-9)
+    polygon=np.asarray(obj["polygon"],dtype=float)
+    if polygon.ndim!=2 or polygon.shape[1]!=2 or len(polygon)<3 or not np.isfinite(polygon).all():
+        raise ValueError("Invalid object mask")
+    mask=np.zeros((512,512),dtype=np.uint8)
+    cv2.fillPoly(mask,[np.rint(np.clip(polygon,0,1)*511).astype(np.int32)],1)
+    x1,y1,x2,y2=np.clip(np.array(head)*512,0,512).astype(int)
+    return float(mask[y1:y2,x1:x2].mean()) if x2>x1 and y2>y1 else 0.
+
+
 def center_inside(box: Box, region: Box) -> bool:
     x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     return region[0] <= x <= region[2] and region[1] <= y <= region[3]
@@ -49,6 +62,8 @@ def center_inside(box: Box, region: Box) -> bool:
 
 @dataclass(frozen=True)
 class SafetyOptions:
+    objects_shadow: bool = False
+    object_imgsz: int = 640
     pose_rotation: int = 0
     reference_monitor: bool = False
     region: Box | None = None
@@ -84,7 +99,7 @@ class SceneModels:
                     raise ValueError("本機模型檔案不存在")
                 from ultralytics import YOLO
                 model = YOLO(path)
-                if model.task != task:
+                if model.task != task and not (name == "objects" and model.task == "segment"):
                     raise ValueError(f"模型 task 必須是 {task}")
                 names = {str(v).lower() for v in model.names.values()}
                 missing = set(labels) - names
@@ -137,11 +152,18 @@ class SceneModels:
                 scene.update(pose_available=False, pose_error=str(exc), people=[])
         if self.objects is not None:
             try:
-                for result in self.objects.predict(frame, verbose=False, conf=self.options.confidence):
-                    for box in (result.boxes if result.boxes is not None else []):
+                for result in self.objects.predict(frame, verbose=False, conf=self.options.confidence,
+                                                   imgsz=self.options.object_imgsz):
+                    boxes=result.boxes if result.boxes is not None else []
+                    if self.objects.task == "segment" and len(boxes) and (result.masks is None or len(result.masks.xyn)!=len(boxes)):
+                        raise ValueError("Segmentation result is missing masks")
+                    for index,box in enumerate(boxes):
                         xy = box.xyxy[0].cpu().tolist()
-                        scene["objects"].append({"label": str(result.names[int(box.cls[0].item())]).lower(),
-                            "box": (xy[0]/w, xy[1]/h, xy[2]/w, xy[3]/h)})
+                        obj={"label": str(result.names[int(box.cls[0].item())]).lower(),
+                            "box": (xy[0]/w, xy[1]/h, xy[2]/w, xy[3]/h),
+                            "confidence":float(box.conf[0].item())}
+                        if self.objects.task == "segment":obj["polygon"]=result.masks.xyn[index].tolist()
+                        scene["objects"].append(obj)
             except Exception as exc:
                 scene.update(objects_available=False, object_error=str(exc), objects=[])
         # Classify only the unambiguous person within the calibrated mattress.
@@ -195,6 +217,8 @@ class SafetyPipeline(BaseDetector):
             return value
 
         opts = SafetyOptions(
+            objects_shadow=text("objects_shadow", "false").lower() in {"true","1","yes"},
+            object_imgsz=int(number("object_imgsz",640,128,1280)),
             pose_rotation=int(number("pose_rotation", 0, 0, 270)),
             reference_monitor=text("reference_monitor", "false").lower() in {"true", "1", "yes"},
             region=parse_region(text("sleep_region")),
@@ -331,7 +355,8 @@ class SafetyPipeline(BaseDetector):
                    and intersection(o["box"], region) / max(area(o["box"]), 1e-9) >= self.options.object_overlap]
         yield self._result("sleep_area_object", bool(hazards) if objects_ready else False,
             "睡眠區出現需留意物件" if hazards and objects_ready else "未發現設定類別的物件" if objects_ready else "異物模型不可用",
-            evaluable=objects_ready, objects=hazards, sleep_region=region)
+            evaluable=objects_ready and not self.options.objects_shadow, objects=hazards, sleep_region=region,
+            experimental=self.options.objects_shadow)
 
         head = person.get("head") if person else None
         head_source = "current" if head else "unknown"
@@ -349,13 +374,14 @@ class SafetyPipeline(BaseDetector):
         else:
             self._last_head = None
         head_ready = objects_ready and head is not None
-        overlapping = [o for o in hazards if head_ready and intersection(o["box"], head) / max(area(head), 1e-9) >= self.options.head_overlap]
+        overlapping = [o for o in hazards if head_ready and object_head_overlap(o,head) >= self.options.head_overlap]
         # A remembered position can support a warning, but cannot prove the current head is clear.
         if head_source == "recent_estimate" and not overlapping:
             head_ready = False
         yield self._result("head_obstruction_warning", bool(overlapping),
             "物件與頭部區域重疊，請查看畫面" if overlapping else "未發現物件與頭部重疊" if head_ready else "無法確認頭部或異物位置",
-            evaluable=head_ready, head=head, head_source=head_source, objects=overlapping)
+            evaluable=head_ready and not self.options.objects_shadow, head=head, head_source=head_source,
+            objects=overlapping, experimental=self.options.objects_shadow)
 
         if person:
             body = person["body"]

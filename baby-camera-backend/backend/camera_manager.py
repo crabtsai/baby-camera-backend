@@ -64,6 +64,7 @@ class CameraRuntime:
             "airway_alert": self.event_manager.local_airway_alert(),
             "presence_snapshot": self.event_manager.presence_snapshot,
             "reference_snapshot": self.event_manager.reference_snapshot,
+            "blanket_learning": self.event_manager.blanket_collection.status(),
         }
 
 

@@ -13,6 +13,7 @@ from backend.api.detector_lab_api import router as detector_lab_router
 from backend.api.event_api import router as event_router
 from backend.api.health_api import router as health_router
 from backend.api.stream_api import router as stream_router
+from backend.api.blanket_api import router as blanket_router
 from backend.camera_manager import CameraManager
 from backend.config import get_settings
 from backend.database import Database
@@ -72,6 +73,7 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(stream_router)
+app.include_router(blanket_router)
 app.include_router(event_router)
 app.include_router(config_router)
 app.include_router(detector_lab_router)

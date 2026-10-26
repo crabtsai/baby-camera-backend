@@ -279,6 +279,9 @@ def camera_page():
         <span id="face-reference-status" class="value">等待狀態</span>
       </div>
       <p id="reference-photo-status">參考照片只保存在本機。</p>
+      <p id="blanket-learning-status">等待棉被學習資料狀態</p>
+      <p id="blanket-model-status">等待棉被模型狀態</p>
+      <a href="/blanket-learning">檢視／標註棉被學習照片</a>
       <div class="status-row">
         <span class="label">口鼻／奶嘴判讀</span>
         <span id="airway-status" class="value">等待狀態；未確認不等於安全</span>
@@ -424,6 +427,12 @@ def camera_page():
         }
         const faceParts = (current.detector_workers || []).flatMap(w => w.assessments || [])
           .find(r => r.event_type === "face_parts_visibility");
+        const learning=current.blanket_learning || {};
+        document.getElementById("blanket-learning-status").textContent=learning.enabled
+          ? `棉被學習照片：已收集 ${learning.count}/${learning.limit} 張，持續在床每 ${learning.interval_sec} 秒補拍。${learning.error || "待確認標註；不會直接當作訓練答案。"}` : "棉被照片收集未啟用";
+        const blanket=(current.detector_workers || []).flatMap(w=>w.assessments || []).find(r=>r.event_type==="sleep_area_object");
+        document.getElementById("blanket-model-status").textContent=!camera.frame_fresh ? "影像已過期，棉被位置未知" : !blanket ? "棉被模型未啟用" :
+          `${blanket.experimental ? "試驗觀察，不作警報依據：" : "物件偵測："}${blanket.message}（${(blanket.objects || []).length} 個候選）`;
         const reference = (current.detector_workers || []).flatMap(w => w.assessments || [])
           .find(r => r.event_type === "face_reference_warning");
         const referenceAge = reference ? Date.now()/1000-reference.observed_at : Infinity;
