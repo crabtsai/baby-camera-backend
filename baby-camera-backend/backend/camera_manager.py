@@ -62,6 +62,8 @@ class CameraRuntime:
             "detectors": self.detector_manager.names(),
             "detector_workers": self.detector_manager.worker_status(),
             "airway_alert": self.event_manager.local_airway_alert(),
+            "presence_snapshot": self.event_manager.presence_snapshot,
+            "reference_snapshot": self.event_manager.reference_snapshot,
         }
 
 

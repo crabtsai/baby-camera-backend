@@ -88,14 +88,33 @@ class BabyFacePartsDetector(BaseDetector):
                                   "y": float(points[index, 1] * height)} for index in indices)
         return detections, keypoints, "已估計鼻部與嘴唇位置；不代表口鼻露出或未被遮擋"
 
-    def detect(self, frame):
+    def detect(self, frame, region=None):
         with self._lock:
             detections, keypoints = [], []
             message = self.disabled_reason or "MediaPipe 推論失敗，口鼻位置無法確認"
             self.operational = False
             if self.predict_fn is not None:
                 try:
-                    faces = self.predict_fn(frame)
+                    image = frame
+                    offset = None
+                    if region is not None:
+                        h, w = frame.shape[:2]
+                        x1, y1, x2, y2 = region
+                        px, py = (x2-x1)*.6, (y2-y1)*.6
+                        left, top = max(0, int((x1-px)*w)), max(0, int((y1-py)*h))
+                        right, bottom = min(w, int((x2+px)*w)), min(h, int((y2+py)*h))
+                        if right-left < 24 or bottom-top < 24:
+                            raise ValueError("Face region too small")
+                        image = np.ascontiguousarray(frame[top:bottom, left:right])
+                        offset = (left, top, right-left, bottom-top, w, h)
+                    faces = self.predict_fn(image)
+                    if offset:
+                        for face in faces:
+                            points = np.asarray(face, dtype=float)
+                            if points.shape != (478, 3) or not np.isfinite(points).all() or np.any(points[:, :2] < 0) or np.any(points[:, :2] > 1):
+                                raise ValueError("Invalid crop landmarks")
+                        left, top, cw, ch, w, h = offset
+                        faces = [[((x*cw+left)/w, (y*ch+top)/h, z) for x,y,z in face] for face in faces]
                     detections, keypoints, message = self.localize(faces, frame.shape)
                     self.operational = True
                 except Exception:

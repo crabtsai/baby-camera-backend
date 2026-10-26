@@ -49,6 +49,8 @@ def center_inside(box: Box, region: Box) -> bool:
 
 @dataclass(frozen=True)
 class SafetyOptions:
+    pose_rotation: int = 0
+    reference_monitor: bool = False
     region: Box | None = None
     boundary_margin: float = .08
     object_overlap: float = .1
@@ -103,7 +105,14 @@ class SceneModels:
         # Fail each model independently, so e.g. object inference still works if pose fails.
         if self.pose is not None:
             try:
-                for result in self.pose.predict(frame, verbose=False, conf=self.options.confidence):
+                k = self.options.pose_rotation // 90
+                pose_frame = np.ascontiguousarray(np.rot90(frame, k))
+                ph, pw = pose_frame.shape[:2]
+                def original_point(x, y):
+                    for _ in range(k):
+                        x, y = 1-y, x
+                    return x, y
+                for result in self.pose.predict(pose_frame, verbose=False, conf=self.options.confidence):
                     if result.boxes is not None and len(result.boxes) == 0:
                         continue
                     if result.boxes is None or result.keypoints is None or result.keypoints.conf is None:
@@ -111,11 +120,14 @@ class SceneModels:
                     for box, xy, confidence in zip(result.boxes.xyxy.cpu().tolist(),
                                                    result.keypoints.xy.cpu().tolist(),
                                                    result.keypoints.conf.cpu().tolist()):
-                        body = (box[0]/w, box[1]/h, box[2]/w, box[3]/h)
+                        corners = [original_point(box[i]/pw, box[j]/ph) for i in (0,2) for j in (1,3)]
+                        body = (min(p[0] for p in corners), min(p[1] for p in corners),
+                                max(p[0] for p in corners), max(p[1] for p in corners))
+                        xy = [original_point(p[0]/pw, p[1]/ph) for p in xy]
                         visible = [i for i in range(min(5, len(xy))) if confidence[i] >= self.options.confidence]
                         head = None
                         if len(visible) >= 2:
-                            xs, ys = [xy[i][0]/w for i in visible], [xy[i][1]/h for i in visible]
+                            xs, ys = [xy[i][0] for i in visible], [xy[i][1] for i in visible]
                             # Approximate head region, not a segmentation mask or contact measurement.
                             pad = max(max(xs)-min(xs), max(ys)-min(ys), .02) * .5
                             head = (max(0., min(xs)-pad), max(0., min(ys)-pad),
@@ -166,6 +178,8 @@ class SafetyPipeline(BaseDetector):
         self.occupancy = OccupancyTracker(self.options.present_frames, self.options.absent_frames,
                                           self.options.max_observation_gap_sec)
         self.dependents: list[BaseDetector] = []
+        from backend.detector.face_reference import FaceReferenceMonitor
+        self.reference_monitor = FaceReferenceMonitor() if self.options.reference_monitor else None
 
     @classmethod
     def from_settings(cls, settings, camera_id):
@@ -181,6 +195,8 @@ class SafetyPipeline(BaseDetector):
             return value
 
         opts = SafetyOptions(
+            pose_rotation=int(number("pose_rotation", 0, 0, 270)),
+            reference_monitor=text("reference_monitor", "false").lower() in {"true", "1", "yes"},
             region=parse_region(text("sleep_region")),
             boundary_margin=number("boundary_margin", .08, 0, .49),
             object_overlap=number("object_overlap", .1, .001, 1),
@@ -196,6 +212,8 @@ class SafetyPipeline(BaseDetector):
         )
         if not opts.hazardous_labels:
             raise ValueError("safety.hazardous_labels cannot be empty")
+        if opts.pose_rotation not in (0, 90, 180, 270):
+            raise ValueError("pose_rotation must be 0, 90, 180 or 270 (counterclockwise)")
         return cls(opts, SceneModels(text("pose_model_path"), text("object_model_path"), text("posture_model_path"), opts))
 
     def _result(self, event, abnormal=False, reason="", evaluable=True, **extra):
@@ -208,6 +226,7 @@ class SafetyPipeline(BaseDetector):
         return self.detect_many(frame)[0]
 
     def detect_many(self, frame):
+        scene = {}
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         # Fixed resolution keeps the blur threshold comparable across camera resolutions.
         small = cv2.resize(gray, (320, 240))
@@ -251,7 +270,12 @@ class SafetyPipeline(BaseDetector):
         for detector in self.dependents:
             if occupancy["state"] == "present":
                 try:
-                    dependent_results = detector.detect_many(frame)
+                    if detector.name == "baby_face_parts_detector":
+                        heads = [p.get("head") for p in scene.get("people", [])
+                                 if self.options.region is None or center_inside(p["body"], self.options.region)]
+                        dependent_results = [detector.detect(frame, region=heads[0] if len(heads) == 1 else None)]
+                    else:
+                        dependent_results = detector.detect_many(frame)
                     self.capabilities["dependent_detectors"][detector.name]["last_error"] = None
                     self.capabilities["dependent_detectors"][detector.name]["available"] = (
                         getattr(detector, "operational", True)
@@ -271,6 +295,10 @@ class SafetyPipeline(BaseDetector):
                 "監測對象未確認或檢測不可用，暫停此項判讀",
                 {"evaluable": False, "assessment": "unknown", "occupancy_state": occupancy["state"],
                  "max_observation_gap_sec": self.options.max_observation_gap_sec}))
+        if self.reference_monitor:
+            parts = next((r for r in results if r.event_type == "face_parts_visibility"), None)
+            results.append(self.reference_monitor.observe(frame, parts, not reasons,
+                           self.options.max_observation_gap_sec))
         self.last_results = [{"event_type": r.event_type, "message": r.message, **r.extra} for r in results]
         return results
 

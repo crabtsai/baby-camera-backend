@@ -275,6 +275,11 @@ def camera_page():
         <span id="face-parts-status" class="value">等待口鼻模型狀態</span>
       </div>
       <div class="status-row">
+        <span class="label">臉部參考監測（實驗性）</span>
+        <span id="face-reference-status" class="value">等待狀態</span>
+      </div>
+      <p id="reference-photo-status">參考照片只保存在本機。</p>
+      <div class="status-row">
         <span class="label">口鼻／奶嘴判讀</span>
         <span id="airway-status" class="value">等待狀態；未確認不等於安全</span>
       </div>
@@ -419,6 +424,14 @@ def camera_page():
         }
         const faceParts = (current.detector_workers || []).flatMap(w => w.assessments || [])
           .find(r => r.event_type === "face_parts_visibility");
+        const reference = (current.detector_workers || []).flatMap(w => w.assessments || [])
+          .find(r => r.event_type === "face_reference_warning");
+        const referenceAge = reference ? Date.now()/1000-reference.observed_at : Infinity;
+        document.getElementById("face-reference-status").textContent = !reference ? "未啟用" :
+          (!camera.frame_fresh || !Number.isFinite(referenceAge) || referenceAge < 0 || referenceAge > 30)
+          ? "監測結果已過期，請查看現場" : reference.message;
+        document.getElementById("reference-photo-status").textContent =
+          `本機照片：人物出現${current.presence_snapshot ? "已拍攝" : "尚未拍攝"}；臉部參考${current.reference_snapshot ? "已拍攝" : "尚未建立"}。`;
         const partsAge = faceParts ? Date.now() / 1000 - faceParts.observed_at : Infinity;
         document.getElementById("face-parts-status").textContent = !faceParts
           ? "口鼻位置模型未啟用"
@@ -441,6 +454,7 @@ def camera_page():
         framesRead.textContent = camera.frames_read ?? 0;
         lastError.textContent = camera.last_error || "-";
       } catch (error) {
+        document.getElementById("face-reference-status").textContent = "連線中斷，臉部參考監測已失效";
         document.getElementById("audio-status").textContent = "連線失敗，哭聲警報無法更新";
         document.getElementById("airway-status").textContent = "狀態已失效，無法判讀口鼻";
         document.getElementById("face-parts-status").textContent = "連線中斷，口鼻位置無法確認";

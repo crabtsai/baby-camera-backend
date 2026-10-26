@@ -49,6 +49,10 @@ class EventManager:
         self.states: dict[str, EventState] = {}
         self._local_airway_alert: dict | None = None
         self._local_airway_alert_at: float | None = None
+        self.reference_snapshot: str | None = None
+        self.presence_snapshot: str | None = None
+        self._presence_captured = False
+        self._presence_capture_at = float("-inf")
         self.alert_policies = self._build_alert_policies(settings)
         for event_type in ("image_quality_warning", "sleep_area_object", "head_obstruction_warning",
                            "boundary_warning", "sleep_posture_warning"):
@@ -60,6 +64,8 @@ class EventManager:
                 max_alerts_per_day=10,
             )
         # WebCam 即時模式下 detector 會平行完成，EventManager 用 lock 統一序列化事件狀態。
+        self.alert_policies["face_reference_warning"] = AlertPolicy(
+            duration_sec=5, cooldown_sec=180, notify_line=False, level="warning")
         # 這樣可以避免同一事件類型同時更新 abnormal_since、occurrence_count 或告警次數。
         self.lock = threading.RLock()
 
@@ -131,6 +137,17 @@ class EventManager:
 
     def _handle_result(self, frame: np.ndarray, result: DetectionResult) -> EventRecord | None:
         event_type = result.event_type
+        if event_type == "bed_occupancy":
+            if result.extra.get("state") == "absent":
+                self._presence_captured = False
+            elif (result.extra.get("state") == "present" and not self._presence_captured
+                  and time.monotonic()-self._presence_capture_at >= 300):
+                self.presence_snapshot = self.snapshot_service.save_snapshot(frame, result, camera_id=self.camera_id)
+                if self.presence_snapshot:
+                    self._presence_captured = True
+                    self._presence_capture_at = time.monotonic()
+        if event_type == "face_reference_warning" and result.extra.get("capture_reference"):
+            self.reference_snapshot = self.snapshot_service.save_snapshot(frame, result, camera_id=self.camera_id)
         policy = self.alert_policies.get(event_type, AlertPolicy(duration_sec=5, cooldown_sec=300))
         state = self.states.setdefault(event_type, EventState())
         now = time.monotonic()
@@ -196,7 +213,7 @@ class EventManager:
 
         event = self.database.insert_event(event)
         state.last_event_at = now
-        if event.event_type == "face_cover_warning":
+        if event.event_type in {"face_cover_warning", "head_obstruction_warning", "face_reference_warning"}:
             self._local_airway_alert = {
                 "id": event.id, "camera_id": self.camera_id,
                 "message": event.message, "created_at": event.created_at,

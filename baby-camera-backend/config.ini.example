@@ -95,6 +95,11 @@ min_body_keypoints = 3
 max_visible_face_keypoints = 1
 
 [detectors.safety]
+; Pose inference rotation only, counterclockwise. Coordinates map back to the original image.
+pose_rotation = 0
+; Experimental reference appearance/lost tracking warning; not an obstruction classifier.
+; Requires face_parts enabled. Saves reference locally after three stable localizations.
+reference_monitor = false
 ; New top-down rules share localization. Start in record-only mode.
 enabled = false
 notify_line = false
