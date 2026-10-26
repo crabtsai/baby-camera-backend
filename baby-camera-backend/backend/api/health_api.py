@@ -15,6 +15,8 @@ def health(request: Request):
     return {
         "status": "ok" if cameras and all(
             c["camera"].get("frame_fresh", False)
+            and (not c.get("high_frequency_motion",{}).get("enabled")
+                 or c["high_frequency_motion"].get("alive",False))
             and all(w["alive"] and w.get("operational", True) and not w["last_error"]
                     for w in c["detector_workers"])
             for c in cameras) else "degraded",

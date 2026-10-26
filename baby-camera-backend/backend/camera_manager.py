@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+import time
 
 from backend.alert_service import AlertService
 from backend.camera_stream import CameraStream
@@ -22,6 +23,7 @@ class CameraRuntime:
     detector_manager: DetectorManager
     event_manager: EventManager
     frame_reader: FrameReader
+    high_frequency_motion: Any = None
 
     @property
     def camera_id(self) -> str:
@@ -30,6 +32,8 @@ class CameraRuntime:
     def start(self) -> None:
         # detector worker 先啟動，再啟動抽幀；避免第一張 frame 進來時沒人處理。
         def handle_detector_result(frame, result, metadata):
+            if self.high_frequency_motion:
+                self.high_frequency_motion.update_subject(result,metadata.get("captured_at",0.))
             self.event_manager.handle_result(frame, result)
 
         self.detector_manager.start_workers(handle_detector_result, max_queue_size=1)
@@ -37,15 +41,19 @@ class CameraRuntime:
         def submit_frame(frame):
             self.detector_manager.submit_frame(
                 frame,
-                metadata={"camera_id": self.camera_id, "source": "webcam"},
+                metadata={"camera_id": self.camera_id, "source": "webcam", "captured_at":time.monotonic()},
             )
 
         self.frame_reader.register_callback(submit_frame)
+        if self.high_frequency_motion:
+            self.high_frequency_motion.start()
+            self.frame_reader.register_frame_callback(self.high_frequency_motion.submit)
         self.frame_reader.start()
 
     def stop(self) -> None:
         # 停止順序反過來：先停止抽幀，再停止 detector worker，最後釋放 camera。
         self.frame_reader.stop()
+        if self.high_frequency_motion:self.high_frequency_motion.stop()
         self.detector_manager.stop_workers()
         self.camera.release()
 
@@ -65,6 +73,7 @@ class CameraRuntime:
             "presence_snapshot": self.event_manager.presence_snapshot,
             "reference_snapshot": self.event_manager.reference_snapshot,
             "blanket_learning": self.event_manager.blanket_collection.status(),
+            "high_frequency_motion": self.high_frequency_motion.status() if self.high_frequency_motion else {"enabled":False},
         }
 
 
@@ -98,6 +107,10 @@ class CameraManager:
                     interval_sec=settings.frame_interval_sec,
                 ),
             )
+            if settings.camera_detector_bool(camera_config.id,"high_frequency_motion","enabled",False):
+                from backend.high_frequency_motion import HighFrequencyMotion
+                runtime=self.runtimes[camera_config.id]
+                runtime.high_frequency_motion=HighFrequencyMotion(runtime.event_manager.handle_result)
 
     @property
     def default_camera_id(self) -> str:

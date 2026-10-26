@@ -289,6 +289,9 @@ class SafetyPipeline(BaseDetector):
                 logger.exception("Safety scene inference failed")
                 results.extend(self._result(e, reason="場景推論失敗，無法判讀", evaluable=False) for e in self.EVENTS)
         occupancy = self.occupancy.status()
+        candidates=[p for p in scene.get("people",[]) if self.options.region is None
+                    or center_inside(p["body"],self.options.region)]
+        occupancy["subject_region"] = (candidates[0]["body"] if occupancy["state"]=="present" and len(candidates)==1 else None)
         results.insert(1, self._result("bed_occupancy", evaluable=occupancy["state"] != "unknown", **occupancy))
         # Run dependent rules behind THIS frame's presence gate, not a racing worker's last result.
         for detector in self.dependents:

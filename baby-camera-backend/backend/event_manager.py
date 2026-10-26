@@ -71,6 +71,8 @@ class EventManager:
         # WebCam 即時模式下 detector 會平行完成，EventManager 用 lock 統一序列化事件狀態。
         self.alert_policies["face_reference_warning"] = AlertPolicy(
             duration_sec=5, cooldown_sec=180, notify_line=False, level="warning")
+        self.alert_policies["high_frequency_motion_warning"] = AlertPolicy(
+            duration_sec=2,cooldown_sec=60,notify_line=False,level="warning")
         # 這樣可以避免同一事件類型同時更新 abnormal_since、occurrence_count 或告警次數。
         self.lock = threading.RLock()
 
@@ -219,7 +221,7 @@ class EventManager:
 
         event = self.database.insert_event(event)
         state.last_event_at = now
-        if event.event_type in {"face_cover_warning", "head_obstruction_warning", "face_reference_warning"}:
+        if event.event_type in {"face_cover_warning", "head_obstruction_warning", "face_reference_warning", "high_frequency_motion_warning"}:
             self._local_airway_alert = {
                 "id": event.id, "camera_id": self.camera_id,
                 "message": event.message, "created_at": event.created_at,

@@ -270,6 +270,9 @@ def camera_page():
       <div id="audio-alert" role="alert" style="color:#b42318;font-weight:bold"></div>
       <p>聲音由開啟此頁的電腦／手機播放；請先啟用聲音、保持頁面開啟及音量開啟。攝影機喇叭尚未連接。</p>
       <div id="airway-alert" role="alert" style="color:#b42318;font-weight:bold"></div>
+      <div class="status-row"><span class="label">高頻抖動（實驗性）</span>
+        <span id="high-frequency-status" class="value">等待狀態</span></div>
+      <p>高頻動作提醒不能診斷或排除抽搐；踢腿、哭鬧、被子移動也可能觸發。</p>
       <div class="status-row">
         <span class="label">寶寶口鼻位置</span>
         <span id="face-parts-status" class="value">等待口鼻模型狀態</span>
@@ -412,6 +415,11 @@ def camera_page():
         renderCameraOptions(cameras, selectedCameraId);
         const current = cameras.find((item) => item.camera_id === selectedCameraId) || cameras[0] || {};
         const camera = current.camera || data.camera || {};
+        const shaking=current.high_frequency_motion || {};
+        const shakingAge=Date.now()/1000-shaking.observed_at;
+        document.getElementById("high-frequency-status").textContent=!shaking.enabled ? "未啟用" :
+          (!camera.frame_fresh || !shaking.alive || !Number.isFinite(shakingAge) || shakingAge<0 || shakingAge>2)
+          ? "高頻分析資料過期或中斷，無法判讀" : `${shaking.message}${shaking.fps ? `（取樣 ${shaking.fps} FPS）` : ""}${shaking.peak_hz ? `，約 ${shaking.peak_hz} Hz` : ""}`;
         const audio = data.audio || {};
         const audioState = audio.cameras?.[selectedCameraId] || {};
         const audioLabels = {starting: "音訊模型載入中", listening: "正在辨識哭聲／尖叫", reconnecting: "音訊中斷，重連中", stale: "音訊結果過期", error: "音訊推論失敗"};
@@ -463,6 +471,7 @@ def camera_page():
         framesRead.textContent = camera.frames_read ?? 0;
         lastError.textContent = camera.last_error || "-";
       } catch (error) {
+        document.getElementById("high-frequency-status").textContent="連線中斷，無法判讀高頻動作";
         document.getElementById("face-reference-status").textContent = "連線中斷，臉部參考監測已失效";
         document.getElementById("audio-status").textContent = "連線失敗，哭聲警報無法更新";
         document.getElementById("airway-status").textContent = "狀態已失效，無法判讀口鼻";

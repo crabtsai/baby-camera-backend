@@ -102,6 +102,9 @@ objects_shadow = false
 ; enabled = true
 ; interval_sec = 60
 ; max_images = 1000
+; Experimental 2–4 Hz repetitive image motion; NOT seizure diagnosis.
+; [camera.YOUR_CAMERA_ID.detectors.high_frequency_motion]
+; enabled = true
 object_imgsz = 640
 ; Pose inference rotation only, counterclockwise. Coordinates map back to the original image.
 pose_rotation = 0

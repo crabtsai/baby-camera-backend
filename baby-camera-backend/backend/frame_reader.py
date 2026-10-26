@@ -27,11 +27,16 @@ class FrameReader:
         # 避免設定太小造成 CPU / YOLO 負載過高，最低限制為 0.1 秒。
         self.interval_sec = max(0.1, interval_sec)
         self.callbacks: list[FrameCallback] = []
+        self.frame_callbacks = []
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
     def register_callback(self, callback: FrameCallback) -> None:
         self.callbacks.append(callback)
+
+    def register_frame_callback(self, callback) -> None:
+        """Nonblocking consumers of each newly decoded frame and its arrival time."""
+        self.frame_callbacks.append(callback)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -57,6 +62,10 @@ class FrameReader:
                 self._stop_event.wait(0.2)
                 continue
             now = time.monotonic()
+            if frame is not None:
+                for callback in self.frame_callbacks:
+                    try:callback(frame,now)
+                    except Exception:logger.exception("Continuous frame callback failed")
             if frame is not None and now >= next_sample_at:
                 next_sample_at = now + self.interval_sec
                 # 每個 callback 代表一組後續處理，例如：
