@@ -79,6 +79,7 @@ def test_manager_builds_enabled_prone_sleep_detector():
         enable_motion_detector=False,
         enable_baby_detector=False,
         enable_face_cover_detector=False,
+        enable_face_parts_detector=False,
         enable_prone_sleep_detector=True,
         prone_sleep_yolo_model_path="",
     )

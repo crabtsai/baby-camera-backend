@@ -1,131 +1,105 @@
-import base64
+from pathlib import Path
+from types import SimpleNamespace
 
-import cv2
 import numpy as np
 import pytest
 
 from backend.config import Settings
 from backend.detector.baby_face_parts import BabyFacePartsDetector
 
-FRAME = np.zeros((100, 100, 3), dtype=np.uint8)
+FRAME = np.zeros((100, 200, 3), dtype=np.uint8)
 
 
-def prediction(label, x, y, width, height, confidence=.9):
-    return {"class": label, "x": x, "y": y, "width": width, "height": height, "confidence": confidence}
+def mesh():
+    return np.random.default_rng(12).uniform(.2, .8, (478, 3)).tolist()
 
 
-HEAD = prediction("HEAD", 50, 50, 80, 80)
-NOSE = prediction("NOSE", 50, 45, 10, 10)
-MOUTH = prediction("MOUTH", 50, 70, 20, 10)
-
-
-def detector(*predictions):
-    return BabyFacePartsDetector(predict_fn=lambda _: BabyFacePartsDetector.normalize({"predictions": list(predictions)}))
-
-
-def test_visible_parts_not_an_obstruction_event():
-    result = detector(HEAD, NOSE, MOUTH).detect(FRAME)
-    assert result.extra["assessment"] == "clear"
-    assert not result.is_abnormal
-    assert result.event_type == "face_parts_visibility"
-    assert not result.extra["obstruction_detection_supported"]
-    assert result.extra["detections"][0]["box"] == [10, 10, 90, 90]
-
-
-@pytest.mark.parametrize("parts", [(HEAD, NOSE), (HEAD, MOUTH), (NOSE, MOUTH), (HEAD, HEAD, NOSE, MOUTH)])
-def test_missing_or_ambiguous_anatomy_is_unknown(parts):
-    result = detector(*parts).detect(FRAME)
+def test_localization_never_claims_visibility_or_safety():
+    instance = BabyFacePartsDetector(predict_fn=lambda _: [mesh()])
+    result = instance.detect(FRAME)
+    assert result.extra["localization_status"] == "located"
     assert result.extra["assessment"] == "unknown"
-    assert not result.is_abnormal
+    assert not result.extra["evaluable"] and not result.is_abnormal
+    assert not result.extra["visibility_confirmed"]
+    assert not result.extra["obstruction_detection_supported"]
+    assert result.extra["offline"]
+    assert len(result.extra["detections"]) == 3
+    nose = result.extra["detections"][1]
+    points = np.array(mesh())[[1, 2, 98, 327, 168], :2] * [200, 100]
+    assert nose["box"] == [*points.min(axis=0), *points.max(axis=0)]
+    assert nose["estimated"] and nose["confidence"] == 0
 
 
-def test_other_heads_parts_and_low_confidence_do_not_clear():
-    assert detector(HEAD, NOSE, prediction("MOUTH", 95, 70, 4, 4)).detect(FRAME).extra["assessment"] == "unknown"
-    assert detector(HEAD, NOSE, {**MOUTH, "confidence": .1}).detect(FRAME).extra["assessment"] == "unknown"
+@pytest.mark.parametrize("faces", [[], [mesh(), mesh()], [mesh()[:200]], [[[float('nan')]*3]*478], [[[.5]*3]*478]])
+def test_invalid_empty_or_multiple_faces_do_not_localize(faces):
+    result = BabyFacePartsDetector(predict_fn=lambda _: faces).detect(FRAME)
+    assert result.extra["localization_status"] == "unknown"
+    assert not result.extra["detections"] and not result.is_abnormal
 
 
-def test_outage_clears_previous_success():
-    instance = detector(HEAD, NOSE, MOUTH)
-    assert instance.detect(FRAME).extra["assessment"] == "clear"
-    def failure(_):
-        raise ValueError("secret-key-must-not-appear")
-    instance.predict_fn = failure
+def test_out_of_frame_mesh_is_unknown():
+    points = mesh()
+    points[1][0] = -0.1
+    result = BabyFacePartsDetector(predict_fn=lambda _: [points]).detect(FRAME)
+    assert result.extra["localization_status"] == "unknown"
+
+
+def test_failure_clears_preceding_success():
+    instance = BabyFacePartsDetector(predict_fn=lambda _: [mesh()])
+    instance.detect(FRAME)
+    def fail(_):
+        raise RuntimeError("internal-details")
+    instance.predict_fn = fail
     result = instance.detect(FRAME)
     assert not instance.operational
-    assert result.extra["assessment"] == "unknown"
     assert result.extra["detections"] == []
-    assert "secret-key" not in result.message
-    assert instance.last_results[0]["assessment"] == "unknown"
+    assert "internal-details" not in result.message
+    assert instance.last_results[0]["localization_status"] == "unknown"
 
 
-@pytest.mark.parametrize("url", ["https://serverless.roboflow.com", "http://example.com", "http://127.0.0.1:9001/path", "http://key@127.0.0.1:9001"])
-def test_no_remote_upload_without_explicit_cloud_setting(url):
-    instance = BabyFacePartsDetector(api_key="secret", api_url=url)
+def test_missing_model_no_network(tmp_path, monkeypatch):
+    import socket
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: pytest.fail("unexpected network"))
+    instance = BabyFacePartsDetector(model_path=tmp_path / "missing.task")
     assert instance.predict_fn is None
+    assert instance.detect(FRAME).extra["localization_status"] == "unknown"
 
 
-def test_missing_key_disables_without_network():
-    instance = BabyFacePartsDetector()
-    assert instance.predict_fn is None
-    assert instance.detect(FRAME).extra["assessment"] == "unknown"
+def test_close_releases_native_resources():
+    instance = BabyFacePartsDetector(predict_fn=lambda _: [])
+    calls = []
+    instance._landmarker = SimpleNamespace(close=lambda: calls.append(True))
+    instance.close()
+    instance.close()
+    assert calls == [True]
 
 
-def test_http_payload_and_no_redirect_or_proxy(monkeypatch):
-    instance = BabyFacePartsDetector(api_key="secret")
-    class Response:
-        status_code = 200
-        def json(self):
-            return {"predictions": [HEAD, NOSE, MOUTH]}
-    def post(url, **kwargs):
-        assert url == "http://127.0.0.1:9001/infer/object_detection"
-        assert kwargs["headers"]["Authorization"] == "Bearer secret"
-        assert kwargs["allow_redirects"] is False
-        assert kwargs["json"]["disable_model_monitoring"] is True
-        assert kwargs["json"]["model_id"] == "baby-face-parts/2"
-        raw = base64.b64decode(kwargs["json"]["image"]["value"])
-        assert cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR).shape == FRAME.shape
-        return Response()
-    monkeypatch.setattr(instance.session, "post", post)
-    assert instance.session.trust_env is False
-    assert instance.detect(FRAME).extra["assessment"] == "clear"
-
-
-@pytest.mark.parametrize("payload", [{}, {"predictions": [prediction("blanket", 1, 1, 1, 1)]}, {"predictions": [{**NOSE, "x": float("nan")}]}])
-def test_invalid_responses_rejected(payload):
-    with pytest.raises(ValueError):
-        BabyFacePartsDetector.normalize(payload)
-
-
-def test_settings_hide_key_from_repr():
-    assert "test-secret" not in repr(Settings(face_parts_api_key="test-secret"))
-
-
-def test_pipeline_gates_inference_and_reports_connection_health():
+def test_pipeline_still_gates_bad_frames():
     from tests.test_safety_pipeline import pipeline, results
-    instance = detector(HEAD, NOSE, MOUTH)
+    instance = BabyFacePartsDetector(predict_fn=lambda _: [mesh()])
     safety = pipeline()
     safety.attach_dependents([instance])
-    assert results(safety)["face_parts_visibility"].extra["assessment"] == "clear"
-    def failure(_):
-        raise RuntimeError("offline")
-    instance.predict_fn = failure
-    assert results(safety)["face_parts_visibility"].extra["assessment"] == "unknown"
-    assert not safety.operational
-    instance.predict_fn = lambda _: pytest.fail("bad image should not reach Roboflow")
+    assert results(safety)["face_parts_visibility"].extra["localization_status"] == "located"
+    instance.predict_fn = lambda _: pytest.fail("bad image reached model")
     assert results(safety, FRAME)["face_parts_visibility"].extra["assessment"] == "unknown"
 
 
-def test_redirect_does_not_clear_visibility(monkeypatch):
-    instance = BabyFacePartsDetector(api_key="secret")
-    class Response:
-        status_code = 307
-    monkeypatch.setattr(instance.session, "post", lambda *a, **k: Response())
-    assert instance.detect(FRAME).extra["assessment"] == "unknown"
+def test_settings_have_local_model_and_no_cloud_credentials():
+    settings = Settings()
+    assert not hasattr(settings, "face_parts_api_key")
+    assert not hasattr(settings, "face_parts_api_url")
 
 
-def test_manager_uses_independent_parts_detector():
-    from backend.detector.detector_manager import DetectorManager
-    settings = Settings(enable_face_parts_detector=True, enable_face_cover_detector=False,
-                        enable_safety_detector=False)
-    manager = DetectorManager.from_settings(settings)
-    assert "baby_face_parts_detector" in manager.names()
+def test_real_model_cpu_inference_offline(monkeypatch):
+    if not Path("models/face_landmarker.task").is_file():
+        pytest.skip("Official model is not downloaded on this host")
+    pytest.importorskip("mediapipe")
+    import socket
+    monkeypatch.setattr(socket.socket, "connect", lambda *a, **k: pytest.fail("unexpected network"))
+    instance = BabyFacePartsDetector()
+    try:
+        result = instance.detect(FRAME)
+        assert instance.operational
+        assert result.extra["localization_status"] == "unknown"
+    finally:
+        instance.close()

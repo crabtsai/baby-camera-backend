@@ -1,6 +1,6 @@
 # 口鼻遮擋與奶嘴：實作及尚缺資源
 
-另已接入 [Roboflow baby-face-parts/2 口鼻位置介面](baby-face-parts.md)。它辨識口鼻位置，不能取代本文件的被子遮擋模型。
+口鼻位置已改用 [MediaPipe 離線口鼻定位](baby-face-parts.md)。關鍵點僅為估計位置，不能取代本文件的被子遮擋模型。
 
 目前只完成判讀規則、模型契約及頁面狀態。**尚無符合規格的模型，口鼻遮擋告警未啟用。** 本機只有 face detector 與 pose detector，不能拿其鼻部關鍵點或臉部框冒充遮擋證據。
 

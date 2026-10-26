@@ -81,13 +81,10 @@ require_nose = true
 require_mouth = true
 
 [detectors.face_parts]
-; sho / baby-face-parts/2：只有口鼻位置，不是被子遮擋模型。
+; MediaPipe 離線口鼻定位；關鍵點不代表口鼻實際露出。
 enabled = false
-api_url = http://127.0.0.1:9001
-api_key =
-allow_cloud = false
-confidence = 0.4
-timeout_sec = 10
+model_path = models/face_landmarker.task
+confidence = 0.5
 
 [detectors.prone_sleep]
 ; 使用 COCO keypoints 的 YOLO Pose 模型。單張畫面只能判斷風險，需搭配事件持續時間降低誤報。

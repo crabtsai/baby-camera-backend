@@ -274,6 +274,10 @@ class SafetyPipeline(BaseDetector):
         self.last_results = [{"event_type": r.event_type, "message": r.message, **r.extra} for r in results]
         return results
 
+    def close(self):
+        for detector in self.dependents:
+            detector.close()
+
     def attach_dependents(self, detectors: list[BaseDetector]) -> list[BaseDetector]:
         """Move subject-specific detectors into the ordered pipeline; return independent ones."""
         self.dependents = [d for d in detectors if d.name in self.DEPENDENT_EVENTS]

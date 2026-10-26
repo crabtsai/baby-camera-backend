@@ -47,8 +47,9 @@ def config(request: Request):
         },
         "face_parts_detector": {
             "enabled": s.enable_face_parts_detector,
-            "model_id": "baby-face-parts/2",
-            "api_key_configured": bool(s.face_parts_api_key),
+            "model_id": "mediapipe-face-landmarker",
+            "model_path": s.face_parts_model_path,
+            "offline": True,
             "obstruction_detection_supported": False,
         },
         "database_path": str(s.database_path),

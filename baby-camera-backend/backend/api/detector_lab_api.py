@@ -272,7 +272,11 @@ def run_detector_lab(payload: DetectorLabRequest, request: Request):
             payload.frames,
             frame_interval_sec=payload.params.webcam_frame_interval_sec,
         )
-    return _run_sync_lab(detectors, payload.frames)
+    try:
+        return _run_sync_lab(detectors, payload.frames)
+    finally:
+        for detector in detectors:
+            detector.close()
 
 
 @router.get("/detector-lab", response_class=HTMLResponse)
@@ -353,7 +357,7 @@ def detector_lab_page():
           <option value="motion_detector">寶寶動作 / 低動作</option>
           <option value="baby_detector">寶寶臉部</option>
           <option value="face_cover_detector">臉部遮蔽</option>
-          <option value="baby_face_parts_detector">寶寶口鼻（Roboflow baby-face-parts/2）</option>
+          <option value="baby_face_parts_detector">寶寶口鼻定位（MediaPipe 離線）</option>
           <option value="safety_pipeline">俯拍：品質／異物／頭部遮擋／邊界／睡姿</option>
         </select>
       </div>
@@ -654,13 +658,13 @@ def detector_lab_page():
       // 依 YOLO box 座標畫框；異常用紅色，正常用綠色。
       const box = normalizeDetectionBox(context, detection);
       if (!box) return false;
-      const color = detection.abnormal ? "#ff4d4f" : "#22c55e";
+      const color = detection.estimated ? "#f59e0b" : detection.abnormal ? "#ff4d4f" : "#22c55e";
       context.strokeStyle = color;
       context.lineWidth = 3;
       context.strokeRect(box.x, box.y, box.width, box.height);
       const confidence = Number(detection.confidence || 0).toFixed(2);
       const label = detection.label || detection.detectorName || "detection";
-      drawLabel(context, `${label} ${confidence}`, box.x, box.y, color);
+      drawLabel(context, detection.estimated ? `${label}（估計位置）` : `${label} ${confidence}`, box.x, box.y, color);
       return true;
     }
 

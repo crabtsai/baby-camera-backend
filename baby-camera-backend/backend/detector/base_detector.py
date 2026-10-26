@@ -15,6 +15,9 @@ class BaseDetector(ABC):
     def reset(self) -> None:
         """Clear temporal state when the monitored subject is unavailable."""
 
+    def close(self) -> None:
+        """Release native model resources after inference stops."""
+
     def detect_many(self, frame: np.ndarray) -> list[DetectionResult]:
         """Allow a shared inference pipeline to emit several independent events."""
         return [self.detect(frame)]

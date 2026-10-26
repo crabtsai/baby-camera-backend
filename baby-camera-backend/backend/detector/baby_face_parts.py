@@ -1,46 +1,34 @@
-"""Visibility assessment with sho's baby-face-parts/2 Roboflow model.
-
-This model localizes anatomy, not blankets or airway obstruction.
-"""
+"""Offline face landmark localization; landmarks are not visibility evidence."""
 from __future__ import annotations
 
-import base64
 import math
+import threading
 import time
-from urllib.parse import urlsplit
+from pathlib import Path
 
 import cv2
-import requests
+import numpy as np
 
 from backend.detector.base_detector import BaseDetector
-from backend.detector.face_cover import FaceCoverDetector
 from backend.schemas import DetectionResult
 
 
 class BabyFacePartsDetector(BaseDetector):
     name = "baby_face_parts_detector"
-    model_id = "baby-face-parts/2"
+    model_id = "mediapipe-face-landmarker"
 
-    def __init__(self, api_key="", api_url="http://127.0.0.1:9001", confidence=.4,
-                 timeout_sec=10., allow_cloud=False, predict_fn=None):
-        self.api_key = api_key
-        self.api_url = api_url.rstrip("/")
+    def __init__(self, model_path="models/face_landmarker.task", confidence=.5, predict_fn=None):
+        self.model_path = str(model_path)
         self.confidence = confidence
-        self.timeout_sec = timeout_sec
         self.last_results = []
         self.disabled_reason = None
         self.operational = False
-        url = urlsplit(self.api_url)
-        local = (url.scheme == "http" and url.hostname in {"127.0.0.1", "::1", "localhost"})
-        cloud = allow_cloud and self.api_url == "https://serverless.roboflow.com"
-        if url.username or url.password or url.query or url.fragment or url.path not in {"", "/"} or not (local or cloud):
-            self.disabled_reason = "口鼻模型僅允許本機服務；Roboflow 雲端需另行同意並啟用"
-        elif not math.isfinite(confidence) or not 0 < confidence <= 1 or not math.isfinite(timeout_sec) or not 0 < timeout_sec <= 60:
-            self.disabled_reason = "口鼻模型信心門檻或逾時設定無效"
-        elif not api_key and predict_fn is None:
-            self.disabled_reason = "尚未設定 Roboflow API key，口鼻模型未連接"
-        self.session = requests.Session()
-        self.session.trust_env = False  # Do not send frames through environment proxies.
+        self._landmarker = None
+        self._lock = threading.RLock()
+        if not math.isfinite(confidence) or not 0 < confidence <= 1:
+            self.disabled_reason = "口鼻模型信心門檻無效"
+        elif predict_fn is None and not Path(self.model_path).is_file():
+            self.disabled_reason = "缺少本機 MediaPipe 模型，請先下載 face_landmarker.task"
         self.predict_fn = None if self.disabled_reason else (predict_fn or self._predict)
 
     @classmethod
@@ -49,77 +37,88 @@ class BabyFacePartsDetector(BaseDetector):
             return cls()
         camera_id = camera_id or settings.camera_id
         return cls(
-            api_key=settings.face_parts_api_key,
-            api_url=settings.face_parts_api_url,
-            allow_cloud=settings.face_parts_allow_cloud,
+            model_path=settings.camera_detector_text(camera_id, "face_parts", "model_path", settings.face_parts_model_path),
             confidence=settings.camera_detector_float(camera_id, "face_parts", "confidence", settings.face_parts_confidence),
-            timeout_sec=settings.face_parts_timeout_sec,
         )
 
     def _predict(self, frame):
-        ok, encoded = cv2.imencode(".jpg", frame)
-        if not ok:
-            raise ValueError("JPEG encoding failed")
-        response = self.session.post(
-            self.api_url + "/infer/object_detection",
-            headers={"Authorization": "Bearer " + self.api_key},
-            json={"model_id": self.model_id, "confidence": self.confidence,
-                  "image": {"type": "base64", "value": base64.b64encode(encoded).decode("ascii")},
-                  "disable_model_monitoring": True},
-            timeout=(3., self.timeout_sec), allow_redirects=False,
-        )
-        if response.status_code != 200:
-            # Never surface response text or request URLs containing secrets.
-            raise ValueError("Inference service unavailable")
-        return self.normalize(response.json())
+        import mediapipe as mp
+        if self._landmarker is None:
+            options = mp.tasks.vision.FaceLandmarkerOptions(
+                base_options=mp.tasks.BaseOptions(model_asset_path=str(Path(self.model_path).resolve()),
+                                                  delegate=mp.tasks.BaseOptions.Delegate.CPU),
+                running_mode=mp.tasks.vision.RunningMode.IMAGE,
+                num_faces=2,
+                min_face_detection_confidence=self.confidence,
+                min_face_presence_confidence=self.confidence,
+                output_face_blendshapes=False,
+                output_facial_transformation_matrixes=False,
+            )
+            self._landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(options)
+        image = mp.Image(image_format=mp.ImageFormat.SRGB,
+                         data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+        result = self._landmarker.detect(image)
+        return [[(p.x, p.y, p.z) for p in face] for face in result.face_landmarks]
 
     @staticmethod
-    def normalize(payload):
-        if not isinstance(payload, dict) or not isinstance(payload.get("predictions"), list):
-            raise ValueError("Invalid prediction payload")
-        detections = []
-        for prediction in payload["predictions"]:
-            label = str(prediction["class"]).upper()
-            if label not in {"HEAD", "EYE", "NOSE", "MOUTH", "BABY"}:
-                raise ValueError("Unexpected model classes")
-            x, y, w, h, confidence = (float(prediction[key]) for key in ("x", "y", "width", "height", "confidence"))
-            if not all(math.isfinite(v) for v in (x, y, w, h, confidence)) or w <= 0 or h <= 0 or not 0 <= confidence <= 1:
-                raise ValueError("Invalid prediction box")
-            detections.append({"label": label.lower(), "confidence": confidence,
-                               "box": [x-w/2, y-h/2, x+w/2, y+h/2]})
-        return detections
+    def localize(faces, shape):
+        if len(faces) != 1:
+            return [], [], "未找到單一臉部；無法定位口鼻"
+        points = np.asarray(faces[0], dtype=float)
+        if points.shape != (478, 3) or not np.isfinite(points).all():
+            raise ValueError("Invalid landmarks")
+        height, width = shape[:2]
+        # Canonical mesh indices summarize estimated regions, not visible parts.
+        regions = {"face_estimate": tuple(range(478)),
+                   "nose_estimate": (1, 2, 98, 327, 168),
+                   "mouth_estimate": (61, 291, 0, 17, 13, 14, 78, 308)}
+        detections, keypoints = [], []
+        for label, indices in regions.items():
+            xy = points[list(indices), :2]
+            if np.any(xy < 0) or np.any(xy > 1):
+                return [], [], "臉部超出畫面，口鼻位置無法確認"
+            pixel = xy * [width, height]
+            low, high = pixel.min(axis=0), pixel.max(axis=0)
+            if np.any(high <= low):
+                return [], [], "關鍵點幾何無效，口鼻位置無法確認"
+            detections.append({"label": label, "box": [*low.tolist(), *high.tolist()],
+                               "confidence": 0., "estimated": True})
+            if label != "face_estimate":
+                keypoints.extend({"index": index, "x": float(points[index, 0] * width),
+                                  "y": float(points[index, 1] * height)} for index in indices)
+        return detections, keypoints, "已估計鼻部與嘴唇位置；不代表口鼻露出或未被遮擋"
 
     def detect(self, frame):
-        detections, state, missing = [], "unknown", []
-        message = self.disabled_reason or "口鼻模型服務不可用，請確認本機服務與 API key"
-        self.operational = False
-        if self.predict_fn is not None:
-            try:
-                detections = self.predict_fn(frame)
-                detections = [d for d in detections if d["confidence"] >= self.confidence]
-                heads = [d for d in detections if d["label"] == "head" and FaceCoverDetector._box(d)]
-                babies = [d for d in detections if d["label"] == "baby"]
-                self.operational = True
-                if len(heads) != 1 or len(babies) > 1:
-                    message = "頭部未確認或有多個監測對象，無法判讀口鼻"
-                else:
-                    parts = {d["label"] for d in detections if FaceCoverDetector._inside(d, heads[0])}
-                    missing = [part for part in ("nose", "mouth") if part not in parts]
-                    if missing:
-                        message = "未確認" + "、".join({"nose": "鼻部", "mouth": "嘴部"}[p] for p in missing) + "；不代表已確認被子遮擋"
-                    else:
-                        state = "clear"
-                        message = "本張偵測到鼻部與嘴部；此模型不辨識被子或奶嘴"
-            except Exception:
-                # Return unknown without retaining a preceding successful result.
-                detections = []
-                self.operational = False
-        result = DetectionResult(self.name, "face_parts_visibility", False, 0., message, {
-            "assessment": state, "evaluable": state != "unknown", "enabled": self.predict_fn is not None,
-            "model_id": self.model_id, "obstruction_detection_supported": False,
-            "detections": detections, "missing_parts": missing,
-            "frame_width": int(frame.shape[1]), "frame_height": int(frame.shape[0]),
-            "observed_at": time.time(), "confidence_kind": "rule_based_not_probability",
-        })
-        self.last_results = [{"event_type": result.event_type, "message": message, **result.extra}]
-        return result
+        with self._lock:
+            detections, keypoints = [], []
+            message = self.disabled_reason or "MediaPipe 推論失敗，口鼻位置無法確認"
+            self.operational = False
+            if self.predict_fn is not None:
+                try:
+                    faces = self.predict_fn(frame)
+                    detections, keypoints, message = self.localize(faces, frame.shape)
+                    self.operational = True
+                except Exception:
+                    detections, keypoints = [], []
+            result = DetectionResult(self.name, "face_parts_visibility", False, 0., message, {
+                "assessment": "unknown", "evaluable": False,
+                "localization_status": "located" if detections else "unknown",
+                "enabled": self.predict_fn is not None, "model_id": self.model_id,
+                "offline": True, "obstruction_detection_supported": False,
+                "visibility_confirmed": False, "detections": detections, "keypoints": keypoints,
+                "frame_width": int(frame.shape[1]), "frame_height": int(frame.shape[0]),
+                "observed_at": time.time(), "confidence_kind": "landmark_estimate_not_visibility",
+            })
+            self.last_results = [{"event_type": result.event_type, "message": message, **result.extra}]
+            return result
+
+    def close(self):
+        with self._lock:
+            if self._landmarker is not None:
+                self._landmarker.close()
+                self._landmarker = None
+            self.operational = False
+
+    def __del__(self):
+        if hasattr(self, "_lock"):
+            self.close()

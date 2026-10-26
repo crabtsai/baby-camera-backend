@@ -153,7 +153,7 @@ def test_runtime_builder_uses_ordered_gate_instead_of_independent_subject_worker
     monkeypatch.setattr("backend.detector.detector_manager.BabyDetector", lambda **_: face)
     manager = DetectorManager.from_settings(Settings(enable_safety_detector=True,
         enable_baby_detector=True, enable_motion_detector=True, enable_dark_detector=False,
-        enable_face_cover_detector=False, enable_prone_sleep_detector=False))
+        enable_face_cover_detector=False, enable_face_parts_detector=False, enable_prone_sleep_detector=False))
     assert manager.detectors == [detector]
     assert {d.name for d in detector.dependents} == {"baby_detector", "motion_detector"}
     manager.run_all(frame())

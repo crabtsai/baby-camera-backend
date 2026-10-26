@@ -118,6 +118,8 @@ class DetectorWorker:
                 self.last_processing_sec = time.perf_counter() - started
                 self.frame_queue.task_done()
 
+        self.detector.close()
+
     def status(self) -> dict[str, Any]:
         # 提供 /health 查看各 detector worker 是否還活著，以及是否有掉 frame。
         return {
