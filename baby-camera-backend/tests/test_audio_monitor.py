@@ -1,4 +1,5 @@
 from backend.audio_monitor import CryPolicy, AudioMonitor
+import pytest
 
 CRY = {'Baby cry, infant cry': .8}
 SCREAM = {'Screaming': .9}
@@ -69,3 +70,36 @@ def test_live_five_second_policy():
     assert p.latched
     p.observe({}, 20)
     assert not p.latched
+
+
+def test_calibrated_threshold_keeps_cooldown_and_quiet_rearm():
+    scores = {'Baby cry, infant cry': .30}
+    assert CryPolicy().observe(scores, 5) is None
+    p = CryPolicy(cry_threshold=.25)
+    assert p.observe(scores, 5) == 'cry_warning'
+    assert p.observe(scores, 10) is None
+    p.observe({}, 15)
+    p.observe({}, 20)
+    assert not p.latched
+    assert p.observe(scores, 25) is None
+    assert p.observe(scores, 65) == 'cry_warning'
+
+
+@pytest.mark.parametrize('threshold', [0, .249, 1.1, float('nan'), float('inf')])
+def test_invalid_calibration_rejected(threshold):
+    with pytest.raises(ValueError):
+        CryPolicy(cry_threshold=threshold)
+
+
+def test_monitor_uses_configured_threshold_and_reports_it(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr('backend.audio_monitor._get_float', lambda *a: .25)
+    monitor = AudioMonitor(SimpleNamespace(cameras=[SimpleNamespace(id='test')]), None)
+    assert monitor.status()['cry_threshold'] == .25
+    assert monitor.policies['test'].observe({'Baby cry, infant cry': .26}, 5) == 'cry_warning'
+
+
+def test_bad_config_falls_back_to_default(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr('backend.audio_monitor._get_float', lambda *a: float('nan'))
+    assert AudioMonitor(SimpleNamespace(cameras=[]), None).status()['cry_threshold'] == .5

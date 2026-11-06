@@ -136,6 +136,13 @@ sleep_region =
 ; [camera.baby-cam-01.detectors.safety]
 ; sleep_region = 0.1,0.1,0.9,0.9
 
+[audio]
+enabled = false
+model_path = models/audio-ast
+ffmpeg_path =
+; Default 0.5. Calibrate with labelled local audio before lowering (minimum 0.25).
+cry_threshold = 0.5
+
 [alert]
 webhook_url =
 ingest_key =

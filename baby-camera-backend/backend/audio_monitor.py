@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from backend.config import _get, _get_bool
+from backend.config import _get, _get_bool, _get_float
 from backend.schemas import EventRecord
 
 log = logging.getLogger(__name__)
@@ -23,7 +23,10 @@ class CryPolicy:
 
     Silence must last 10s before rearming; disconnected time is never silence.
     """
-    def __init__(self, window_seconds=5):
+    def __init__(self, window_seconds=5, cry_threshold=.5):
+        if not math.isfinite(cry_threshold) or not .25 <= cry_threshold <= 1:
+            raise ValueError('cry_threshold must be between 0.25 and 1')
+        self.cry_threshold = cry_threshold
         self.window_seconds = window_seconds
         self.last_at = None
         self.count = 0
@@ -39,7 +42,7 @@ class CryPolicy:
         if self.last_at is not None and not 0 < at - self.last_at <= self.window_seconds + 1.5:
             self.reset_gap()
         self.last_at = at
-        cry = scores.get('Baby cry, infant cry', 0) >= .5
+        cry = scores.get('Baby cry, infant cry', 0) >= self.cry_threshold
         scream = scores.get('Screaming', 0) >= .7
         if cry or scream:
             self.quiet = 0
@@ -83,7 +86,10 @@ class AudioMonitor:
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.queues = {c.id: queue.Queue(maxsize=1) for c in settings.cameras}
-        self.policies = {c.id: CryPolicy() for c in settings.cameras}
+        threshold = _get_float('audio', 'cry_threshold', .5)
+        # Invalid local settings must not silently turn every sound into an alarm.
+        self.cry_threshold = threshold if math.isfinite(threshold) and .25 <= threshold <= 1 else .5
+        self.policies = {c.id: CryPolicy(cry_threshold=self.cry_threshold) for c in settings.cameras}
         self.states = {c.id: {'status': 'starting', 'last_result_at': None} for c in settings.cameras}
         self.processes = {}
         self.threads = []
@@ -136,7 +142,8 @@ class AudioMonitor:
                             '疑似嬰兒哭聲，請查看' if event == 'cry_warning' else '疑似尖叫聲，請查看',
                             scores['Baby cry, infant cry' if event == 'cry_warning' else 'Screaming'],
                             'audio_classifier', extra={'window_seconds': 5, 'source_identity_verified': False,
-                                'score_kind': 'model_score_not_accuracy', 'notify_line': False}))
+                                'score_kind': 'model_score_not_accuracy', 'notify_line': False,
+                                'cry_threshold': self.cry_threshold}))
                         with self.lock:
                             self.last_alert = {'id': record.id, 'camera_id': camera_id, 'message': record.message,
                                                'at': time.time(), 'event_type': event}
@@ -194,7 +201,8 @@ class AudioMonitor:
                     state['status'] = 'stale'
             return {'enabled': self.enabled, 'error': self.error, 'cameras': cameras,
                     'last_alert': dict(self.last_alert) if self.last_alert else None,
-                    'notification': 'browser_only', 'raw_audio_saved': False, 'window_seconds': 5}
+                    'notification': 'browser_only', 'raw_audio_saved': False, 'window_seconds': 5,
+                    'cry_threshold': self.cry_threshold}
 
     def stop(self):
         self.stop_event.set()

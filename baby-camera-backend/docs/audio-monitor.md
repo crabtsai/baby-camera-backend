@@ -31,7 +31,17 @@ model_path = models/audio-ast
 ffmpeg_path = <本機 ffmpeg.exe 絕對路徑>
 ```
 
-目前初始閾值與音訊窗固定於 `backend/audio_monitor.py`；變更需重跑驗證與重啟監控。
+哭聲預設門檻為 0.5，可在 `[audio]` 設定 `cry_threshold`（允許 0.25–1，無效值退回 0.5）；尖叫門檻與音訊窗保持不變。變更需驗證並重啟監控，`/health` 的 `audio.cry_threshold` 顯示實際生效門檻。
+
+## 使用個人哭聲參考校正
+
+```powershell
+.venv\Scripts\python.exe -m scripts.evaluate_cry_reference "<本機哭聲檔.mp3>" --cry-threshold 0.25 --comparison "<對照音訊.wav>"
+```
+
+工具將音檔副本、SHA-256、16 kHz 單聲道音訊及逐窗報告保存在 Git 忽略的 `data/calibration/audio-references/`。參考檔由使用者標示為哭聲，但不假定每一秒都只有哭聲；對照檔標籤仍需人工確認。完整 5 秒窗才計分，報告另列尾段未評分秒數。此工具不修改模型權重、設定或發送警報。
+
+2026-11-06 的本機個人參考校正：50.91 秒參考檔共 10 個完整窗，門檻 0.5 時 4 窗達標，0.25 時 6 窗達標。兩段先前攝影機錄音及一段狗叫樣本合計 11 窗，在兩種門檻下皆未達標。這是同一份參考資料上的門檻校正，不是獨立準確率測試，也不是模型重新訓練；未達標的窗仍可能漏報。單一正樣本及少量對照不能證明泛化能力或排除其他說話、電視聲的誤報。
 
 ## 驗證與限制
 

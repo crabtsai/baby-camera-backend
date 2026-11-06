@@ -14,7 +14,7 @@ import wave
 import numpy as np
 
 from backend.audio_monitor import AudioClassifier, CryPolicy
-from backend.config import Settings, _get
+from backend.config import Settings, _get, _get_float
 
 
 def capture(camera, ffmpeg, folder, seconds):
@@ -37,10 +37,10 @@ def capture(camera, ffmpeg, folder, seconds):
         return {'camera_id': camera[1].id, 'error': 'capture_failed_or_timed_out'}
 
 
-def analyze(path, classifier):
+def analyze(path, classifier, cry_threshold=.5):
     with wave.open(str(path), 'rb') as recording:
         samples = np.frombuffer(recording.readframes(recording.getnframes()), dtype='<i2').astype(np.float32) / 32768
-    policy = CryPolicy()
+    policy = CryPolicy(cry_threshold=cry_threshold)
     windows = []
     for start in range(0, len(samples) - 79999, 80000):
         chunk = samples[start:start + 80000]
@@ -80,7 +80,9 @@ def main():
     print(f'Recording {len(cameras)} cameras for {args.seconds}s into {folder}', flush=True)
     with ThreadPoolExecutor(max_workers=max(1, len(cameras))) as pool:
         results = list(pool.map(lambda camera: capture(camera, ffmpeg, folder, args.seconds), cameras))
-    report = {'recordings': results, 'outbound_notifications': False}
+    threshold = _get_float('audio', 'cry_threshold', .5)
+    threshold = threshold if np.isfinite(threshold) and .25 <= threshold <= 1 else .5
+    report = {'recordings': results, 'outbound_notifications': False, 'cry_threshold': threshold}
     report_path = folder / 'report.json'
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding='utf-8')
     if any('file' in result for result in results):
@@ -88,7 +90,7 @@ def main():
         classifier = AudioClassifier(_get('audio', 'model_path', 'models/audio-ast'))
         for result in results:
             if 'file' in result:
-                result['windows'] = analyze(result['file'], classifier)
+                result['windows'] = analyze(result['file'], classifier, threshold)
                 print(json.dumps(result, ensure_ascii=False), flush=True)
                 report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding='utf-8')
     print(f'Report: {report_path}', flush=True)
