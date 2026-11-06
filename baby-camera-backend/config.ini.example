@@ -142,6 +142,8 @@ model_path = models/audio-ast
 ffmpeg_path =
 ; Default 0.5. Calibrate with labelled local audio before lowering (minimum 0.25).
 cry_threshold = 0.5
+; Explicit audio-only opt-in, including when using start_windows.bat.
+notify_line = false
 
 [alert]
 webhook_url =

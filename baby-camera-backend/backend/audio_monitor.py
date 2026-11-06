@@ -78,8 +78,9 @@ class AudioClassifier:
 
 
 class AudioMonitor:
-    def __init__(self, settings, database):
+    def __init__(self, settings, database, notifications=None):
         self.settings, self.database = settings, database
+        self.notifications = notifications
         self.enabled = _get_bool('audio', 'enabled', False)
         self.ffmpeg = _get('audio', 'ffmpeg_path', '') or shutil.which('ffmpeg')
         self.model_path = _get('audio', 'model_path', 'models/audio-ast')
@@ -98,6 +99,8 @@ class AudioMonitor:
 
     def start(self):
         if self.enabled:
+            if self.notifications:
+                self.notifications.start()
             t = threading.Thread(target=self._infer, daemon=True, name='audio-inference')
             self.threads.append(t)
             t.start()
@@ -138,15 +141,20 @@ class AudioMonitor:
                             'cry_score': scores['Baby cry, infant cry'], 'scream_score': scores['Screaming'],
                             'top_classes': top, 'episode_active': policy.latched}
                     if event:
-                        record = self.database.insert_event(EventRecord(camera_id, event,
+                        record = EventRecord(camera_id, event,
                             '疑似嬰兒哭聲，請查看' if event == 'cry_warning' else '疑似尖叫聲，請查看',
                             scores['Baby cry, infant cry' if event == 'cry_warning' else 'Screaming'],
                             'audio_classifier', extra={'window_seconds': 5, 'source_identity_verified': False,
-                                'score_kind': 'model_score_not_accuracy', 'notify_line': False,
-                                'cry_threshold': self.cry_threshold}))
+                                'score_kind': 'model_score_not_accuracy', 'notify_line': bool(self.notifications),
+                                'cry_threshold': self.cry_threshold})
+                        if self.notifications:
+                            self.notifications.prepare(record)
+                        record = self.database.insert_event(record)
                         with self.lock:
                             self.last_alert = {'id': record.id, 'camera_id': camera_id, 'message': record.message,
                                                'at': time.time(), 'event_type': event}
+                        if self.notifications:
+                            self.notifications.submit(record)
                 except Exception:
                     policy.reset_gap()
                     with self.lock:
@@ -201,7 +209,9 @@ class AudioMonitor:
                     state['status'] = 'stale'
             return {'enabled': self.enabled, 'error': self.error, 'cameras': cameras,
                     'last_alert': dict(self.last_alert) if self.last_alert else None,
-                    'notification': 'browser_only', 'raw_audio_saved': False, 'window_seconds': 5,
+                    'notification': 'browser_and_line' if self.notifications else 'browser_only',
+                    'last_notification': self.notifications.last_result if self.notifications else None,
+                    'raw_audio_saved': False, 'window_seconds': 5,
                     'cry_threshold': self.cry_threshold}
 
     def stop(self):
@@ -211,3 +221,5 @@ class AudioMonitor:
                 p.kill()
         for t in self.threads:
             t.join(timeout=3)
+        if self.notifications:
+            self.notifications.stop()

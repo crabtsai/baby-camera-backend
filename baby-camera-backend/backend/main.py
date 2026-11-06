@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from backend.alert_service import AlertService
 from backend.audio_monitor import AudioMonitor
+from backend.audio_notifications import AudioNotifications
 from backend.api.config_api import router as config_router
 from backend.api.detector_lab_api import router as detector_lab_router
 from backend.api.event_api import router as event_router
@@ -15,7 +16,7 @@ from backend.api.health_api import router as health_router
 from backend.api.stream_api import router as stream_router
 from backend.api.blanket_api import router as blanket_router
 from backend.camera_manager import CameraManager
-from backend.config import get_settings
+from backend.config import get_settings, _get_bool
 from backend.database import Database
 from backend.logger import setup_logging
 from backend.services.snapshot_service import SnapshotService
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    audio_settings = settings
     if getattr(app.state, "local_monitor_only", False):
         settings = replace(settings, alert_dry_run=True, alert_include_snapshot_image=False)
     setup_logging(settings)
@@ -53,7 +55,13 @@ async def lifespan(app: FastAPI):
     app.state.detector_manager = default_runtime.detector_manager
     app.state.event_manager = default_runtime.event_manager
     app.state.frame_reader = default_runtime.frame_reader
-    app.state.audio_monitor = AudioMonitor(settings, database)
+    audio_notifications = None
+    if (_get_bool('audio', 'notify_line', False) and not audio_settings.alert_dry_run
+            and audio_settings.alert_webhook_url):
+        audio_notifications = AudioNotifications(
+            camera_manager, snapshot_service,
+            AlertService(replace(audio_settings, alert_include_snapshot_image=True)))
+    app.state.audio_monitor = AudioMonitor(settings, database, audio_notifications)
     app.state.audio_monitor.start()
 
     try:
